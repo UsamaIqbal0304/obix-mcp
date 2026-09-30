@@ -51,6 +51,15 @@ Some of what came out of doing it that way:
     inside a `catch (Exception) { throw new BadUriErr(); }` in the method that
     wrote it, so every failure on that branch is the same empty fault whose
     `display` is a Java class name.
+  * **Nothing in Niagara implements `BIObixWritable`.** Across all 756 jars in a
+    stock 4.15.5.22 `modules/`, only `ObixUtils` (which does the `instanceof`) and
+    the interface itself name it, so every PUT takes the generic property-set
+    branch. The export descriptor is a *different* path: `BObixExport` is
+    `BIObixInvocable`, its `writePoint` property is a
+    `BObixOp("write", "obix:WritePointIn", "obix:Point")`, and it writes the
+    descriptor's own `out` slot — the link lands the value. Its `priority` defaults
+    to level 10 and the only forbidden value is `none`, so **levels 1 to 16 are all
+    reachable, including 1.** EVIDENCE.md §E.
 
 **It has not been run against a JACE or any other controller.** It is tested
 against a fixture derived from the same evidence, which proves self-consistency
@@ -132,7 +141,14 @@ This list is the design, not a disclaimer:
   * **No write without two separate decisions** — this
     deployment may write (`--allow-write`), and it may write *there*
     (`--write-allow`). A write to a Niagara point is a plant movement at a
-    priority level, not a variable assignment.
+    priority level, not a variable assignment. These gates are this bridge's own,
+    and they exist because the protocol supplies none: `ObixUtils.serviceWrite` is
+    `BComplex.set(prop, value, user)` on any property the URI resolves to, with no
+    reference to an export descriptor or any allow-list — so **an unexported point
+    is not a protected one.** The only refusals in the method are the station's
+    permission check on the target component's category, rethrown as
+    `PermissionErr "<user> cannot write this object"`, and one hardcoded case for
+    program `source`/`classFile`. EVIDENCE.md §E.
   * **No polling faster than 10 seconds.** Tridium's own guidance for a watch on a
     controller is "increase this value to 10 seconds or more" against a 2-second
     default. An agent loop will poll as fast as it is permitted to, so the floor

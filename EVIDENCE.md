@@ -158,7 +158,7 @@ The station as an oBIX *client* does build a Basic header — `obix.net.ObixSess
 in `obix-rt.jar` assembles `"Basic " + Base64(user + ":" + password)` — which is
 the only literal Basic construction in either jar, and it is outbound.
 
-## E. Writes reach a point through an export descriptor
+## E. Two write paths, and the export descriptor is only one of them
 
 `ExposingWritableControlPointsForExt-…html`: writable control points are exposed
 by adding an `ObixExport` descriptor under the ObixNetwork's Exports folder, and
@@ -167,13 +167,90 @@ being `BooleanWritable`, `EnumWritable`, `NumericWritable`, `StringWritable`.
 Each descriptor names a `Point` ORD and a `Priority` level, and creates a link on
 the target so "contention from within the Framework does not occur".
 
-Two consequences this bridge takes seriously:
+That is Tier B, and taken alone it invites a wrong conclusion — that the Exports
+folder is the list of what an outside caller may move. The bytecode says otherwise.
+There are **two** write paths, and only the first one consults an export.
 
-  * a point being visible over oBIX does not make it writable — the export has to
-    exist, at a priority someone chose;
+**Path 1, the export descriptor — a POST, not a PUT.**
+`javax.baja.obix.driver.export.BObixExport` implements `BIObixEncodable`,
+`BIObixInvocable` and `BIStatus`; it does **not** implement `BIObixWritable`. Its
+static initialiser makes the `writePoint` property a
+`new BObixOp("write", "obix:WritePointIn", "obix:Point")`, so a descriptor advertises
+an *op* and the write is an invocation. `invoke(ObixDecoder, ObixEncoder)` calls
+`decoder.addFacets(getFacets())`, decodes, and sets the descriptor's **own** `out`
+`BStatusValue` — accepting a complex carrying a `value` child, or a bare `BDouble`,
+`BBoolean` or `BString`, and silently leaving the value alone for anything else. The
+link `doConfigure` made is what carries that value to the point's priority input;
+this method takes no user and performs no permission check of its own. Any exception
+becomes a `WrapperException`.
+
+`doConfigure(Context)` resolves the `point` ORD against `Sys.getStation()` and
+requires both `BIWritablePoint` and `BControlPoint`, else it sets status `fault` with
+reason `"<ord> is not a writable point."`; the other fault reason is
+`" is already linked in priority "`. The four type branches are exactly
+`BBooleanWritable`, `BNumericWritable`, `BEnumWritable`, `BStringWritable`,
+confirming the guide's claim from code. Two defaults worth knowing before trusting a
+descriptor: `priority` defaults to `BPriorityLevel.level_10`, and
+`DISALLOWED_PRIORITIES` is `BEnumRange.make([0], [BPriorityLevel.none.getTag()])` —
+a single forbidden value, `none`. **Levels 1 through 16 are all permitted, including
+level 1.** The descriptor does not keep anybody away from an override level; a human
+chose 10, and a human can choose 1.
+
+**Path 2, the generic property set — and it never looks at an export.**
+`ObixUtils.serviceWrite(OrdTarget, ObixDecoder, ObixEncoder)` branches to
+`BIObixWritable.write(decoder)` when the target implements it — and **nothing does.**
+Scanning every one of the 756 jars in `/opt/Niagara/Niagara-4.15.5.22/modules/`, the
+only classes that so much as name `BIObixWritable` are `ObixUtils`, which does the
+`instanceof`, and the interface itself. So on a stock station every PUT falls through
+to the generic branch:
+
+  * target null, or `getPropertyInParent()` null → `BadUriErr("PUT " + href)`;
+  * `newCopy(true)`, then `decoder.decode(value)`;
+  * if the component is a `com.tridium.program.BCode` and the property is `source` or
+    `classFile` → `PermissionException("Cannot write program code")`, the one
+    hardcoded refusal in the method;
+  * walk `getPropertyPathInComponent()` down to the owning complex, then
+    `BComplex.set(prop, value, OrdTarget.getUser())`;
+  * re-resolve the ORD and encode the result, so a PUT answers with the new state.
+
+The whole body sits in one `catch (PermissionException)` — the exception table covers
+offsets 5 to 209 — rethrown as `PermissionErr(user.getName() + " cannot write this
+object")`. That is the real boundary. **There is no reference to an export descriptor,
+an Exports folder or any allow-list anywhere in `serviceWrite`.** What stops a PUT is
+the oBIX user's Niagara permissions on the target component's *category*, which is
+what makes that caught `PermissionException` fire in the first place.
+
+By contrast `serviceInvoke` has **no** exception table, so a refused action does not
+come back as a well-formed `PermissionErr` the way a refused PUT does. Its own shape:
+`BIObixInvocable` → that object's `invoke`; otherwise `getSlotInComponent()` cast to
+`Action`; a `BObixLobby` target with a null action re-encodes the lobby rather than
+erroring; any other null action → `BadUriErr("POST " + href)`; the body is decoded
+against `action.getParameterDefault()` when there is one, then
+`BComponent.invoke(action, val, cx)` with the `OrdTarget` itself as context, followed
+by `waitForPointExecute(target, EngineManager.getCycles(), Clock.ticks())`. Unlike the
+write path, `BIObixInvocable` has nine implementors: `BAlarmServiceQuery`,
+`BAlarmWrapper`, `BBatchOp`, `BObixHistoryAppend`, `BObixHistoryQuery`,
+`BObixHistoryRollup`, `BObixOp`, `BObixExport`, and `BObixTransformHistoryQuery` in
+`obixSeriesTransform-rt`.
+
+One detail ties this to §N: `doConfigure` builds the op-in contract URIs as
+`/obix/def/baja:StatusBoolean` and friends — pointing into the `def` branch, which is
+one of the five that resolve but write no element into the lobby listing. A descriptor
+cites a URI the lobby never advertises.
+
+Three consequences this bridge takes seriously:
+
+  * a point being visible over oBIX does not make it writable, but the converse trap is
+    the dangerous one — **the absence of an export does not make a property safe**,
+    because the generic PUT path does not consult the export list at all;
+  * the fence that actually holds is the station's own permission model on the
+    component's category, which is engineered per-user and is not visible in any
+    listing the bridge can read — so the bridge cannot compute what it is allowed to
+    write, and must not pretend to;
   * a write is a plant movement at a priority, not a variable assignment. Hence
     two gates: `--allow-write` for the deployment and `--write-allow` for the
-    subtree, and no write tool advertised at all without them.
+    subtree, and no write tool advertised at all without them. Those gates are this
+    bridge's own fence, chosen precisely because the protocol does not supply one.
 
 The guide shows no literal write request anywhere. The element name is the type
 (§H), and `obix_write` requires it explicitly rather than inferring it, because

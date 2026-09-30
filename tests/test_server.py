@@ -67,6 +67,18 @@ class TestToolSurface(unittest.TestCase):
     def test_write_tool_appears_when_writes_are_on(self):
         self.assertIn("obix_write", [t["name"] for t in tool_schemas(True)])
 
+    def test_write_tool_does_not_tell_the_model_the_export_list_is_the_fence(self):
+        # EVIDENCE.md §E: ObixUtils.serviceWrite consults no export descriptor.
+        # It is BComplex.set(prop, value, user), so a property that was never
+        # exported is still writable if the user's category permissions allow it.
+        # A description implying otherwise would teach an agent that an
+        # unexported point is safe to aim at, which is exactly backwards.
+        write = [t for t in tool_schemas(True) if t["name"] == "obix_write"][0]
+        desc = write["description"]
+        self.assertIn("whether or not it was exported", desc)
+        self.assertIn("allowlist", desc)
+        self.assertNotIn("writable point, inside", desc)
+
     def test_every_tool_has_a_description_and_a_schema(self):
         for t in tool_schemas(True):
             self.assertTrue(t["description"].strip(), t["name"])

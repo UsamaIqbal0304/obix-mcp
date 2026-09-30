@@ -502,7 +502,17 @@ class ObixClient:
         return self.read("about/")
 
     def write(self, href: str, tag: str, value, name: str = "") -> ObixObject:
-        """PUT a value. Gated twice — see the class docstring."""
+        """PUT a value. Gated twice — see the class docstring.
+
+        The gates are this bridge's, not the protocol's. `ObixUtils.serviceWrite`
+        sets any resolvable property — `BComplex.set(prop, value, user)` — and
+        consults no export descriptor and no allow-list; the only refusals in it
+        are the station's own permission check on the target component's category
+        (rethrown as `PermissionErr "<user> cannot write this object"`) and one
+        hardcoded case for program `source`/`classFile`. So the absence of an
+        oBIX export does not make a property safe, and the allowlist below is the
+        fence precisely because the wire does not supply one.  EVIDENCE.md §E
+        """
         if not self.allow_write:
             raise ObixError(
                 "writes are disabled. This client is read-only unless it is started "

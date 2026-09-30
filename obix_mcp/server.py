@@ -368,10 +368,13 @@ def tool_schemas(writes_enabled: bool) -> list[dict]:
     if writes_enabled:
         tools.append(dict(
             name="obix_write",
-            description="Write a value to a writable point, inside the allowlist this "
-                        "bridge was started with. The type is the oBIX element name and "
-                        "must match the point: writing a numeric set point needs 'real'. "
-                        "This moves plant.",
+            description="Write a value to a point, inside the allowlist this bridge was "
+                        "started with. The type is the oBIX element name and must match "
+                        "the point: writing a numeric set point needs 'real'. This moves "
+                        "plant. A station accepts a PUT to any property the oBIX user's "
+                        "permissions allow, whether or not it was exported — so the "
+                        "allowlist, not the station's export list, is what scopes this "
+                        "tool.",
             inputSchema={"type": "object", "required": ["href", "type", "value"],
                          "properties": {
                              "href": {"type": "string"},
