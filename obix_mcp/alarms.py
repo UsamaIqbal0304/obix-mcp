@@ -7,14 +7,22 @@ an op and a feed, and every interesting detail was read out of
 `com.tridium.obix.server.BAlarmServiceAgent`, `BAlarmServiceQuery` and
 `BAlarmLobbyAgent`:
 
-  * a GET of `/obix/alarms/` is a *shortcut* to the alarm service component —
-    `BAlarmsLobbyAgent.getComponent()` is `Sys.getService(BAlarmService.TYPE)`.
-    Its own children are alarm classes, not alarm records, so walking it finds
-    no alarms. `BAlarmServiceAgent.encodeFinishing` is what adds the parts that
-    matter: an `<int name="count">` of the open alarms, an op named `query`
-    (in `obix:AlarmFilter`, out `obix:AlarmQueryOut`) and a feed named `feed`.
-    Their hrefs come from `encoder.getChildHref`, and the names the station
-    builds them from are `~alarmQuery` and `~alarmFeed`.
+  * the `alarms` lobby child is a *ref*, not a folder you reach by that name.
+    `BAlarmsLobbyAgent` extends `BShortcutLobbyAgent`, so its encodeLobbyChild
+    sets the href to `makeSlotPathUri(encoder, getComponent().toPathString())`
+    — `getComponent()` is `Sys.getService(BAlarmService.TYPE)`, and the uri is
+    `concat(concat(lobbyPath, "config"), "/Services/AlarmService")`, i.e.
+    `/obix/config/Services/AlarmService`. That advertised href is the alarm
+    service. A bare GET of `/obix/alarms/` by *name* does not reach it: the
+    shortcut's `resolve("")` builds `station:|slot:`, which is the station root.
+    This module follows the ref's href from the lobby, never the name, so it
+    lands on the service either way. The service's own children are alarm
+    classes, not alarm records, so walking it finds no alarms.
+    `BAlarmServiceAgent.encodeFinishing` is what adds the parts that matter: an
+    `<int name="count">` of the open alarms, an op named `query` (in
+    `obix:AlarmFilter`, out `obix:AlarmQueryOut`) and a feed named `feed`. Their
+    hrefs come from `encoder.getChildHref`, and the names the station builds them
+    from are `~alarmQuery` and `~alarmFeed`.
   * the op is where the records are. `BAlarmServiceQuery.invoke` reads three
     children out of the filter by name — `limit`, `start`, `end` — and turns
     them into a BQL query over the alarm database: `alarm:|bql:select * from
@@ -28,10 +36,11 @@ an op and a feed, and every interesting detail was read out of
     `obix:Alarm obix:AckAlarm`, plus `obix:PointAlarm` or `obix:StatefulAlarm`.
     Its fields are the names in ALARM_FIELDS, and it carries a `niagara-uuid`,
     which is the only handle by which one alarm can be named again later.
-  * `BAlarmLobbyAgent` is the twelfth lobby agent and its `encodeLobbyChild` is
-    a single `return`: it writes no element. So `/obix/alarm/<uuid>` resolves
-    while appearing in no lobby listing — a client that only walks what it is
-    shown cannot find it.
+  * `BAlarmLobbyAgent` (the singular `alarm`, not `alarms`) is one of five lobby
+    agents whose `encodeLobbyChild` is a single `return`: it writes no element.
+    So `/obix/alarm/<uuid>` resolves while appearing in no lobby listing — a
+    client that only walks what it is shown cannot find it. The other four
+    unlisted branches are `bql`, `def`, `ord` and `units`.
 
 This module reads. The alarm records the station sends advertise an `ack` op,
 and an ack is an invoke that writes to the alarm database — it sets the record's

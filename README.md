@@ -34,20 +34,23 @@ Some of what came out of doing it that way:
   * **A relative href means "under this document", and an ordinary GET is where
     that bites.** `ObixEncoder.getChildHref` returns a bare `name + "/"` exactly
     when the parent is the document element — which a direct read always makes it
-    — and `configChild` puts every component child through it. So `GET
-    /obix/alarms/` answers with its query op at `~alarmQuery/`, meaning
-    `/obix/alarms/~alarmQuery/`. Resolve it against `/obix/` the way a lobby
-    child resolves and the station answers 404 while working perfectly. The lobby
-    is the one document where both readings agree, which is how a bridge passes
-    its whole suite and then fails on the first nested op. This one did, until the
-    fixture started serving hrefs the way the station does. EVIDENCE.md §N.
-  * **One lobby agent is registered and writes nothing.**
-    `BAlarmLobbyAgent.encodeLobbyChild` is a single `return`, so
-    `/obix/alarm/<uuid>` resolves to a real alarm record while appearing in no
-    listing a client can walk. The station's own "UUID not found" message never
-    arrives either: it is thrown inside a `catch (Exception) { throw new
-    BadUriErr(); }` in the method that wrote it, so every failure on that branch
-    is the same empty fault whose `display` is a Java class name.
+    — and `configChild` puts every component child through it. So a GET of the
+    alarm service — at `/obix/config/Services/AlarmService/`, the href the
+    `alarms` ref advertises — answers with its query op at `~alarmQuery/`,
+    meaning `/obix/config/Services/AlarmService/~alarmQuery/`. Resolve it against
+    `/obix/` the way a lobby child resolves and the station answers 404 while
+    working perfectly. The lobby is the one document where both readings agree,
+    which is how a bridge passes its whole suite and then fails on the first
+    nested op. This one did, until the fixture started serving hrefs the way the
+    station does. EVIDENCE.md §N.
+  * **Five of the twelve lobby agents write nothing.** `alarm`, `bql`, `def`,
+    `ord` and `units` each have an `encodeLobbyChild` that is a single `return`,
+    so they resolve but appear in no listing a client can walk. `alarm` is the
+    useful one: `/obix/alarm/<uuid>` resolves to a real alarm record. The
+    station's own "UUID not found" message never arrives either: it is thrown
+    inside a `catch (Exception) { throw new BadUriErr(); }` in the method that
+    wrote it, so every failure on that branch is the same empty fault whose
+    `display` is a Java class name.
 
 **It has not been run against a JACE or any other controller.** It is tested
 against a fixture derived from the same evidence, which proves self-consistency

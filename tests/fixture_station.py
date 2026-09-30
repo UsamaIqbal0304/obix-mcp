@@ -159,18 +159,24 @@ class Station:
 
     def lobby_xml(self):
         kids = ""
-        # Eleven elements from twelve agents. BAlarmLobbyAgent, which serves
-        # /obix/alarm/<uuid>, has an encodeLobbyChild whose whole body is
-        # `return` — it writes nothing, so the branch is resolvable and
-        # unlisted. Putting it in the list here hid that for two sessions.
-        for name in ("about", "alarms", "def", "units", "config",
-                     "histories", "continuousControl", "bql", "ord", "batch",
-                     "watchService"):
+        # Seven elements from twelve agents. The other five — alarm, bql, def,
+        # ord and units — have an encodeLobbyChild whose whole body is `return`:
+        # they write nothing, so each is resolvable and unlisted. Putting them in
+        # the list here hid that for two sessions.
+        for name in ("about", "alarms", "batch", "config",
+                     "continuousControl", "histories", "watchService"):
             if name == "alarms":
-                # A shortcut to the alarm service, so a ref like any other
-                # folder — everything that makes it useful is in the object it
-                # points at, not in the lobby.
-                kids += '<ref name="alarms" href="alarms/" is="obix:AlarmSubject"/>'
+                # BAlarmsLobbyAgent extends BShortcutLobbyAgent, so its
+                # encodeLobbyChild sets the href to
+                # makeSlotPathUri(encoder, AlarmService.toPathString()) =
+                # concat(concat(lobbyPath, "config"), "/Services/AlarmService")
+                # — the alarm service reached under the `config` (station)
+                # branch, NOT a bare "alarms/". A GET of "alarms/" by name would
+                # resolve the shortcut with an empty remainder to
+                # `station:|slot:`, the station root; the useful object is only
+                # at the advertised href, and this is that href.
+                kids += ('<ref name="alarms" href="config/Services/AlarmService/" '
+                         'is="obix:AlarmSubject"/>')
                 continue
             if name == "batch":
                 # BBatchOp.encodeLobbyChild is initOp("batch", "obix:BatchIn",
@@ -340,8 +346,12 @@ class Station:
         The op and feed hrefs are *relative and slash-terminated*, because
         `getChildHref(parentHref, name)` returns a bare `name + "/"` when the
         parent is the document element — which a direct GET always makes it.
-        Serving them absolute would hide the resolution the client has to do."""
-        h = "/obix/alarms/"
+        Serving them absolute would hide the resolution the client has to do.
+
+        The subject lives at /obix/config/Services/AlarmService/ — the href the
+        lobby's `alarms` ref advertises through makeSlotPathUri — not at a bare
+        /obix/alarms/, which resolves to the station root."""
+        h = "/obix/config/Services/AlarmService/"
         open_now = sum(1 for a in self.alarms if not a["acked"])
         return (f'<obj {NS} href="{h}" is="obix:AlarmSubject">'
                 f'<int name="count" val="{open_now}" min="{open_now}"/>'
@@ -354,7 +364,7 @@ class Station:
 
     def alarm_class_xml(self, name):
         """One alarm class. BAlarmClassAgent advertises the same op and feed."""
-        h = f"/obix/alarms/{name}/"
+        h = f"/obix/config/Services/AlarmService/{name}/"
         n = sum(1 for a in self.alarms if a["alarmClass"] == name)
         return (f'<obj {NS} href="{h}" is="obix:AlarmSubject">'
                 f'<int name="count" val="{n}" min="{n}"/>'
@@ -583,9 +593,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._xml(200, st.about_xml())
             if href == "watchService/":
                 return self._xml(200, st.watch_service_xml())
-            if href in ("alarms", "alarms/"):
+            if href in ("config/Services/AlarmService",
+                        "config/Services/AlarmService/"):
                 return self._xml(200, st.alarms_xml())
-            m = re.match(r"^alarms/([A-Za-z0-9_]+)/?$", href)
+            m = re.match(r"^config/Services/AlarmService/([A-Za-z0-9_]+)/?$", href)
             if m:
                 return self._xml(200, st.alarm_class_xml(m.group(1)))
             m = re.match(r"^alarm/([^/]+)/?$", href)
@@ -649,10 +660,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 # an HTTP error status.
                 return self._xml(200, f'<err {NS} href="/obix/batch" '
                                       f'display="{_xa(exc)}"/>')
-        m = re.match(r"^alarms/~alarmQuery/?$", href)
+        m = re.match(r"^config/Services/AlarmService/~alarmQuery/?$", href)
         if m:
             return self._xml(200, st.alarm_query_xml(body))
-        m = re.match(r"^alarms/([A-Za-z0-9_]+)/~alarmQuery/?$", href)
+        m = re.match(r"^config/Services/AlarmService/([A-Za-z0-9_]+)/~alarmQuery/?$", href)
         if m:
             return self._xml(200, st.alarm_query_xml(body, alarm_class=m.group(1)))
         m = re.match(r"^alarm/([^/]+)/ack/?$", href)

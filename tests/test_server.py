@@ -152,9 +152,10 @@ class TestReads(Base):
         payload, err = self.call(self.stdio(), "obix_lobby")
         self.assertFalse(err, payload)
         self.assertEqual(payload["documented_but_absent"], ["histories"])
-        # The unlisted branch is reported as unlisted, not as missing: it is
-        # absent from every station's lobby, including a complete one.
-        self.assertEqual(payload["unlisted_branches"], ["alarm"])
+        # The unlisted branches are reported as unlisted, not as missing: they
+        # are absent from every station's lobby, including a complete one.
+        self.assertEqual(payload["unlisted_branches"],
+                         ["alarm", "bql", "def", "ord", "units"])
 
     def test_a_complete_lobby_reports_nothing_absent(self):
         payload, err = self.call(self.stdio(), "obix_lobby")

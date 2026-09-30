@@ -77,7 +77,8 @@ class TestDiscovery(Base):
     def test_a_lobby_with_no_alarms_branch_says_so_and_lists_what_there_is(self):
         full = self.station.lobby_xml()
         self.station.lobby_xml = lambda: full.replace(
-            '<ref name="alarms" href="alarms/" is="obix:AlarmSubject"/>', "")
+            '<ref name="alarms" href="config/Services/AlarmService/" '
+            'is="obix:AlarmSubject"/>', "")
         with self.assertRaises(ObixError) as caught:
             alarms_object(self.client)
         self.assertIn("no 'alarms' branch", str(caught.exception))
@@ -85,12 +86,13 @@ class TestDiscovery(Base):
 
     def test_the_op_href_comes_from_the_station_not_from_a_tilde_name(self):
         # The station serves this op href as a bare `~alarmQuery/`. It is
-        # relative to the document it arrived in, so it means
-        # /obix/alarms/~alarmQuery/ — and a client that resolves it against the
-        # servlet root asks for /obix/~alarmQuery/ and gets a 404.
+        # relative to the document it arrived in — the alarm service at
+        # /obix/config/Services/AlarmService/ — so it means
+        # /obix/config/Services/AlarmService/~alarmQuery/. A client that resolves
+        # it against the servlet root asks for /obix/~alarmQuery/ and gets a 404.
         self.assertIn('href="~alarmQuery/"', self.station.alarms_xml())
         op = query_href(alarms_object(self.client))
-        self.assertEqual(op, "/obix/alarms/~alarmQuery/")
+        self.assertEqual(op, "/obix/config/Services/AlarmService/~alarmQuery/")
 
     def test_a_subject_with_no_query_op_says_what_it_does_offer(self):
         subject = decode(f'<obj xmlns="{NS}" is="obix:AlarmSubject">'
@@ -167,22 +169,31 @@ class TestScope(Base):
     def test_one_alarm_class_can_be_asked_instead_of_the_service(self):
         subject = alarms_object(self.client)
         cls = subject.child("CriticalAlarmClass")
-        # The class ref arrives as `CriticalAlarmClass/`, relative to
-        # /obix/alarms/. Passing it through as the station wrote it is the case
-        # that fails if hrefs are resolved against the servlet root instead.
-        self.assertEqual(cls.href, "/obix/alarms/CriticalAlarmClass/")
+        # The class ref arrives as `CriticalAlarmClass/`, relative to the alarm
+        # service at /obix/config/Services/AlarmService/. Passing it through as
+        # the station wrote it is the case that fails if hrefs are resolved
+        # against the servlet root instead.
+        self.assertEqual(
+            cls.href, "/obix/config/Services/AlarmService/CriticalAlarmClass/")
         out = open_alarms(self.client, scope=cls.href)
         self.assertEqual([r["uuid"] for r in out["rows"]], [FAN])
-        self.assertEqual(out["op"], "/obix/alarms/CriticalAlarmClass/~alarmQuery/")
+        self.assertEqual(
+            out["op"],
+            "/obix/config/Services/AlarmService/CriticalAlarmClass/~alarmQuery/")
 
     def test_a_scoped_call_does_not_reuse_the_services_cached_op(self):
         bridge = Bridge(self.client)
         self.addCleanup(bridge.close)
         bridge.tool_alarms()
-        self.assertEqual(bridge.alarms_op, "/obix/alarms/~alarmQuery/")
-        out = bridge.tool_alarms(scope="alarms/CriticalAlarmClass/")
-        self.assertEqual(out["op"], "/obix/alarms/CriticalAlarmClass/~alarmQuery/")
-        self.assertEqual(bridge.alarms_op, "/obix/alarms/~alarmQuery/")
+        self.assertEqual(bridge.alarms_op,
+                         "/obix/config/Services/AlarmService/~alarmQuery/")
+        out = bridge.tool_alarms(
+            scope="config/Services/AlarmService/CriticalAlarmClass/")
+        self.assertEqual(
+            out["op"],
+            "/obix/config/Services/AlarmService/CriticalAlarmClass/~alarmQuery/")
+        self.assertEqual(bridge.alarms_op,
+                         "/obix/config/Services/AlarmService/~alarmQuery/")
 
 
 class TestAlarmsCannotAck(Base):

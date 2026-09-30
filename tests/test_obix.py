@@ -98,8 +98,9 @@ class TestHrefResolution(unittest.TestCase):
     EVIDENCE.md §N"""
 
     def test_a_relative_child_resolves_under_its_document(self):
-        self.assertEqual(resolve_href("/obix/alarms/", "~alarmQuery/"),
-                         "/obix/alarms/~alarmQuery/")
+        self.assertEqual(
+            resolve_href("/obix/config/Services/AlarmService/", "~alarmQuery/"),
+            "/obix/config/Services/AlarmService/~alarmQuery/")
         # Not /obix/~alarmQuery/, which is where the servlet root would put it
         # and where the station has nothing.
         self.assertEqual(resolve_href("/obix/histories/AHU-01/Temp/",
@@ -111,7 +112,8 @@ class TestHrefResolution(unittest.TestCase):
 
     def test_an_absolute_href_is_left_alone(self):
         for h in ("/obix/config/AHU-01/", "http://jace/obix/config/"):
-            self.assertEqual(resolve_href("/obix/alarms/", h), h)
+            self.assertEqual(
+                resolve_href("/obix/config/Services/AlarmService/", h), h)
 
     def test_an_ord_href_is_not_a_path_and_is_not_joined(self):
         # configChild falls back to "|" + ord.encodeToString() for a child it
@@ -139,11 +141,12 @@ class TestHrefResolution(unittest.TestCase):
     def test_an_element_with_no_href_passes_its_parents_base_down(self):
         # getChildHref(null, name) returns a bare name, so the child of an
         # element without an href is relative to that element's own base.
-        doc = decode('<obj href="/obix/alarms/"><list name="data">'
+        doc = decode('<obj href="/obix/config/Services/AlarmService/">'
+                     '<list name="data">'
                      '<obj href="CriticalAlarmClass/"/></list></obj>',
-                     "/obix/alarms/")
+                     "/obix/config/Services/AlarmService/")
         self.assertEqual(doc.children[0].children[0].href,
-                         "/obix/alarms/CriticalAlarmClass/")
+                         "/obix/config/Services/AlarmService/CriticalAlarmClass/")
 
     def test_the_document_element_falls_back_to_the_path_it_was_read_from(self):
         # A batch reply carries no href of its own.
@@ -160,9 +163,9 @@ class TestRead(Base):
             self.assertIn(name, kids, name)
 
     def test_the_alarm_branch_is_resolvable_and_never_listed(self):
-        # BAlarmLobbyAgent.encodeLobbyChild is a bare return, so the twelfth
-        # agent writes no element. An agent that walks the lobby cannot find
-        # /obix/alarm/<uuid>; one that is told about it can read it.
+        # Five agents (alarm, bql, def, ord, units) have an encodeLobbyChild
+        # that is a bare return, so they write no element. An agent that walks
+        # the lobby cannot find /obix/alarm/<uuid>; one told about it can read it.
         kids = {c.name for c in self.client().lobby().children}
         for name in UNLISTED_BRANCHES:
             self.assertNotIn(name, kids, name)

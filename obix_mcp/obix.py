@@ -34,21 +34,25 @@ SERVLET_PATH = "/obix"
 
 OBIX_NS = "http://obix.org/ns/schema/1.0"
 
-# The lobby children, as the literal strings each B*LobbyAgent.getLobbyName()
-# returns. Worth reading twice: the agent Tridium's own documentation calls the
-# *export* agent mounts as `continuousControl`, so an agent looking for
-# /obix/export finds nothing.  EVIDENCE.md §B
+# The lobby children a client actually sees, as the literal strings each
+# B*LobbyAgent.getLobbyName() returns. Only the seven agents whose
+# encodeLobbyChild writes an element land in a GET of /obix; these are they.
+# Worth reading twice: the agent Tridium's own documentation calls the *export*
+# agent mounts as `continuousControl`, so an agent looking for /obix/export
+# finds nothing.  EVIDENCE.md §B
 LOBBY_CHILDREN = (
-    "about", "alarms", "def", "units", "config", "histories",
-    "continuousControl", "bql", "ord", "batch", "watchService",
+    "about", "alarms", "batch", "config", "continuousControl",
+    "histories", "watchService",
 )
 
-# Twelve agents are registered and eleven of them write an element. The odd one
-# out is BAlarmLobbyAgent, whose encodeLobbyChild is a single `return`: it
-# serves /obix/alarm/<uuid>, resolving a Niagara UUID against the alarm
-# database, while contributing nothing to the list a client walks. So this is
-# not a branch a station lacks — it is a branch no station shows.  EVIDENCE.md §N
-UNLISTED_BRANCHES = ("alarm",)
+# Twelve agents are registered on ObixLobby; only seven (above) write an element
+# into the list a client walks. The other five have an encodeLobbyChild that is
+# a single `return` — they resolve but appear in no listing: `alarm` serves
+# /obix/alarm/<uuid> (a Niagara UUID against the alarm database), `bql` runs a
+# BQL query, `ord` resolves a raw ORD, `def` is the contract dictionary, and
+# `units` the unit database. None of these is a branch a station lacks — each is
+# a branch no station shows.  EVIDENCE.md §N
+UNLISTED_BRANCHES = ("alarm", "bql", "def", "ord", "units")
 
 # BObixServer.service(WebOp) switches on the uppercased request method:
 # GET encodes the resolved target (read), PUT calls ObixUtils.serviceWrite,
@@ -215,13 +219,15 @@ def resolve_href(base: str, href: str) -> str:
       * otherwise `ObixUtils.concat(parentHref, name + "/")`.
 
     So the hrefs a client cannot resolve against the servlet root are exactly
-    the ones an ordinary GET returns. `GET /obix/alarms/` answers with its query
-    op at `~alarmQuery/`, and that means `/obix/alarms/~alarmQuery/`. Resolving
-    it against `/obix/` — which is what a client does if it treats every
-    relative href the way a lobby child behaves — asks for
-    `/obix/~alarmQuery/`, and the station answers 404. The lobby is the one
-    document where the two agree, which is why a bridge can pass every test it
-    has against a lobby walk and still fail on the first nested op.
+    the ones an ordinary GET returns. A GET of the alarm service — at
+    `/obix/config/Services/AlarmService/`, the href the `alarms` ref advertises —
+    answers with its query op at `~alarmQuery/`, and that means
+    `/obix/config/Services/AlarmService/~alarmQuery/`. Resolving it against
+    `/obix/` — which is what a client does if it treats every relative href the
+    way a lobby child behaves — asks for `/obix/~alarmQuery/`, and the station
+    answers 404. The lobby is the one document where the two agree, which is why
+    a bridge can pass every test it has against a lobby walk and still fail on
+    the first nested op.
 
     An href beginning `|` is left alone: `configChild` falls back to
     `"|" + ord.encodeToString()` for a child it cannot name, and that is an ORD,

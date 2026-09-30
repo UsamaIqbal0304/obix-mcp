@@ -111,8 +111,13 @@ This is the single most useful thing in this file, and `obix_lobby` says it in
 the tool reply rather than leaving it to be rediscovered.
 
 `BShortcutLobbyAgent` declares `getLobbyName()` abstract and mounts nothing
-itself, so it is not in the list. Twelve names, and `LOBBY_CHILDREN` in
-`obix_mcp/obix.py` is exactly these twelve.
+itself, so it is not in the list. Twelve agents are registered on `ObixLobby`,
+but only **seven write an element** into a GET of `/obix`: `about`, `alarms`,
+`batch`, `config`, `continuousControl`, `histories` and `watchService`. The
+other five — `alarm`, `bql`, `def`, `ord`, `units` — have an `encodeLobbyChild`
+whose whole body is a single `return`, so each resolves but appears in no
+listing (§N). `LOBBY_CHILDREN` in `obix_mcp/obix.py` is the seven that are
+listed; `UNLISTED_BRANCHES` is the five that are not.
 
 ## C. GET reads, PUT writes, POST invokes
 
@@ -402,8 +407,9 @@ through an op**, and here is the whole path:
 
 | Claim | Where it is read |
 | --- | --- |
-| `/obix/alarms/` is a shortcut to the alarm service component | `BAlarmsLobbyAgent extends BShortcutLobbyAgent`, `getComponent()` is `Sys.getService(BAlarmService.TYPE)`, `getLobbyName()` is `"alarms"` |
-| Walking it finds no alarms | its component children are alarm *classes*. The records are not slots on it |
+| The `alarms` lobby child is a *ref* to the alarm service, advertised at `/obix/config/Services/AlarmService` | `BAlarmsLobbyAgent extends BShortcutLobbyAgent`; `getComponent()` is `Sys.getService(BAlarmService.TYPE)`, and `encodeLobbyChild` sets the href to `makeSlotPathUri(encoder, getComponent().toPathString())` = `concat(concat(lobbyPath, "config"), "/Services/AlarmService")` |
+| A bare GET of `/obix/alarms/` by *name* does **not** reach the service | the shortcut's `resolve("")` builds `station:\|slot:`, which resolves to the station root. Only the advertised href reaches the service; the bridge follows the ref, never the name |
+| Walking the service finds no alarms | its component children are alarm *classes*. The records are not slots on it |
 | What makes it usable is added after the component | `BAlarmServiceAgent.encodeFinishing` writes `<int name="count">` (the open-alarm count), an `op` named `query` with `in="obix:AlarmFilter" out="obix:AlarmQueryOut"`, and a `feed` named `feed` |
 | The op's href is built from `~alarmQuery`, the feed's from `~alarmFeed` | both are `ldc` constants passed to `encoder.getChildHref(encoder.getHref(), …)` — see N.4 for what that returns |
 | The filter is read by child name, and every child is optional | `BAlarmServiceQuery.invoke` looks up `limit`, `start`, `end` and tolerates each being absent. An empty filter means every open alarm |
@@ -413,23 +419,28 @@ through an op**, and here is the whole path:
 | A record's only durable handle is a UUID | `<str name="niagara-uuid">`. `source`, `sourceStation`, `msgText`, `alarmClass`, `priority`, `alarmValue`, `timestamp`, `normalTimestamp`, `ackTimestamp`, `ackUser`, `originalSource`, `originalAlarmClass`, `originalPriority` are the rest |
 | One alarm class can be asked instead of the service | `BAlarmClassAgent.encodeFinishing` advertises the same `query` op and `feed`, scoped by the BQL `where` above |
 
-### N.2 The twelfth lobby agent, which writes nothing
+### N.2 Five lobby agents write nothing, and `alarm` is the useful one
 
-§B lists eleven lobby children. Twelve agents are registered, and the twelfth is
-`BAlarmLobbyAgent`, whose `getLobbyName()` returns `"alarm"` and whose
-`encodeLobbyChild(ObixEncoder, Context)` is **a single `return`**: three bytes of
-bytecode, no element.
+§B lists seven lobby children. Twelve agents are registered on `ObixLobby`; the
+other five — `alarm`, `bql`, `def`, `ord`, `units` — each have an
+`encodeLobbyChild(ObixEncoder, Context)` that is **a single `return`**: three
+bytes of bytecode, no element. They resolve but appear in no listing. `bql` runs
+a BQL query, `ord` resolves a raw ORD, `def` is the contract dictionary, `units`
+the unit database, and `alarm` is the one worth a tool.
 
-Its `resolve(String, Context)` is not empty. It splits the URI at the first `/`,
-decodes the first part with `BUuid.decodeFromString`, fetches that record from
-the alarm database and wraps it in `new BAlarmWrapper(record, ackFlag)` — where
-`ackFlag` is `remainder.contains("ack")`.
+`BAlarmLobbyAgent` — the singular `alarm`, not the `alarms` shortcut —
+`getLobbyName()` returns `"alarm"`. Its `resolve(String, Context)` is not empty:
+it splits the URI at the first `/`, decodes the first part with
+`BUuid.decodeFromString`, fetches that record from the alarm database and wraps
+it in `new BAlarmWrapper(record, ackFlag)` — where `ackFlag` is
+`remainder.contains("ack")`.
 
 So `/obix/alarm/<uuid>` is a live, readable object that **appears in no lobby
 listing**. A client that only walks what it is shown cannot reach it; a client
 that has a UUID from a query reply can. That is why `obix.py` carries
-`UNLISTED_BRANCHES` beside `LOBBY_CHILDREN`, and why `obix_lobby` reports it: an
-unlisted branch is worth telling an operator about, not worth pretending away.
+`UNLISTED_BRANCHES` (the five) beside `LOBBY_CHILDREN` (the seven), and why
+`obix_lobby` reports them: an unlisted branch is worth telling an operator about,
+not worth pretending away.
 
 ### N.3 What an ack is, and the four ways the station makes one awkward
 
@@ -480,10 +491,12 @@ The consequence is the opposite of what a reader expects: **the relative form is
 what an ordinary GET returns.** A direct read makes the object the document
 element, its href ends in a slash, and so every child comes back bare. Nested
 encodings — where the parent href differs from the document href — get the
-concatenated form. `GET /obix/alarms/` answers with its query op at
-`~alarmQuery/`, which means `/obix/alarms/~alarmQuery/`; a client that resolves
-relative hrefs against the servlet path, the way a lobby child behaves, asks for
-`/obix/~alarmQuery/` and is told 404 by a station that is working correctly.
+concatenated form. A GET of the alarm service — at
+`/obix/config/Services/AlarmService/`, the href the `alarms` ref advertises —
+answers with its query op at `~alarmQuery/`, which means
+`/obix/config/Services/AlarmService/~alarmQuery/`; a client that resolves
+relative hrefs against the servlet path instead asks for `/obix/~alarmQuery/`
+and is told 404 by a station that is working correctly.
 
 **The lobby is the one document where the two rules agree**, which is how a
 bridge passes every test it has against a lobby walk and then fails on the first

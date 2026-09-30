@@ -89,10 +89,12 @@ class Bridge:
         return {"children": children, "documented_but_absent": absent,
                 "unlisted_branches": list(UNLISTED_BRANCHES),
                 "note": ("The export branch is mounted as 'continuousControl', not "
-                         "'export' — that is the station's own name for it. "
-                         "/obix/alarm/<uuid> resolves one alarm record by its Niagara "
-                         "UUID and appears in no lobby listing, so nothing that walks "
-                         "this list will find it.")}
+                         "'export' — that is the station's own name for it. Twelve "
+                         "agents are registered but only the seven above write an "
+                         "element; alarm, bql, def, ord and units resolve yet appear "
+                         "in no listing, so nothing that walks this list will find "
+                         "them. /obix/alarm/<uuid> resolves one alarm record by its "
+                         "Niagara UUID.")}
 
     def tool_read(self, href: str, depth: int = 2) -> dict:
         return self.client.read(href).as_dict(depth=max(0, min(int(depth), 6)))
