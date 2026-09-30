@@ -15,7 +15,9 @@ should be able to do to a control system:
     and "this agent may write *here*" are different decisions.
   * There is no tool that writes a batch, and no tool that takes a raw URL and
     a raw body. An agent that can construct arbitrary requests has the whole
-    station, allowlist or not.
+    station, allowlist or not. The batch tool here reads and cannot express
+    anything else: the station's batch op does service writes and invokes, and
+    that is exactly why the request builder in batch.py has no verb argument.
   * Watches are leased and the lease is short, so the server renews them rather
     than leaving an agent to discover its subscription expired while it thought.
 """
@@ -27,6 +29,7 @@ import os
 import sys
 import time
 
+from .batch import MAX_BATCH_ITEMS, read_many
 from .obix import LOBBY_CHILDREN, SERVLET_PATH, ObixClient, ObixError
 from .watch import Watch, changes_to_rows, make_watch, safe_interval
 
@@ -47,6 +50,11 @@ class Bridge:
     def __init__(self, client: ObixClient):
         self.client = client
         self.watches: dict[str, Watch] = {}
+        # The batch op's href, once the lobby has been read for it. Held for the
+        # life of the session rather than re-read per call: the lobby agents are
+        # station configuration, and a controller does not need a second request
+        # to tell us the same thing.
+        self.batch_op = ""
 
     # ------------------------------------------------------------------ tools
 
@@ -71,6 +79,25 @@ class Bridge:
 
     def tool_read(self, href: str, depth: int = 2) -> dict:
         return self.client.read(href).as_dict(depth=max(0, min(int(depth), 6)))
+
+    def tool_batch_read(self, hrefs: list[str]) -> dict:
+        """Read many points in one POST to the station's own batch op.
+
+        Worth having on a controller rather than in spite of one: a walk that
+        reads twenty points is twenty requests, each with its own session
+        lookup, resolve and encode, where the batch op is one. It is also the
+        right tool for a set of points that are not going to change while an
+        agent looks at them — a watch is for values that move, and it costs the
+        station a lease either way.
+
+        A point that cannot be resolved or read comes back as a row saying so,
+        in place, with the rest of the readings — that is BBatchOp's own
+        behaviour and not this bridge being forgiving."""
+        if not hrefs:
+            raise ObixError("obix_batch_read needs at least one href")
+        out = read_many(self.client, list(hrefs), op=self.batch_op)
+        self.batch_op = out["op"]
+        return out
 
     def tool_write(self, href: str, type: str, value) -> dict:
         if type not in ("bool", "int", "real", "str", "enum", "abstime", "reltime"):
@@ -202,6 +229,16 @@ def tool_schemas(writes_enabled: bool) -> list[dict]:
                  "depth": {"type": "integer", "minimum": 0, "maximum": 6, "default": 2,
                            "description": "How many levels of children to include. "
                                           "Deep reads on a controller are expensive."}}}),
+        dict(name="obix_batch_read",
+             description="Read several objects in one request, using the station's own "
+                         "batch operation. Cheaper on a controller than one read per "
+                         "href, and a point that fails comes back as a row saying why "
+                         "rather than failing the others. Reads only: this tool cannot "
+                         "write or invoke, whatever the station's batch op supports.",
+             inputSchema={"type": "object", "required": ["hrefs"], "properties": {
+                 "hrefs": {"type": "array", "items": {"type": "string"},
+                           "maxItems": MAX_BATCH_ITEMS,
+                           "description": "hrefs from the lobby or a previous read"}}}),
         dict(name="obix_watch_open",
              description="Open a server-side watch on a set of hrefs and return the first "
                          "reading of each. A watch is how you follow changing values "
@@ -326,6 +363,7 @@ class Stdio:
             "obix_write": lambda: self.bridge.tool_write(args.get("href", ""),
                                                          args.get("type", ""),
                                                          args.get("value")),
+            "obix_batch_read": lambda: self.bridge.tool_batch_read(args.get("hrefs") or []),
             "obix_watch_open": lambda: self.bridge.tool_watch_open(args.get("hrefs") or []),
             "obix_watch_poll": lambda: self.bridge.tool_watch_poll(
                 args.get("watch", ""), bool(args.get("refresh"))),

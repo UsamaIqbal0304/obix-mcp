@@ -35,6 +35,7 @@ a mistake here:
 | `docDrivers-doc.jar` | `0bc35fa0b1848e3dbaabe007991740229942e3e5a3690afdafde7988f445cffe` |
 | `obixDriver-rt.jar` | `adea7a80bfb80ccac6070feee7ae5a431bd99ecba184c9ba5f879ce7eafb28b8` |
 | `obix-rt.jar` | `67f56c646fc60db78367af518db8935e4c507c5331beb06a92b670933dd133f0` |
+| `web-rt.jar` | `2645d48548eaf2c326bdd1d34f3e4638edbad526f307fcde1ff206dbc495bf30` |
 
 ---
 
@@ -60,9 +61,30 @@ read-only and "Currently fixed at: `obix`" — and `EnablingAnOBIXServer-…html
 documents the oBIX URI as `http://[hostnameOrIP]/obix` and the WSDL as
 `http://[hostnameOrIP]/obix/wsdl`.
 
-**Not closed:** whether renaming `servletName` changes the live HTTP mount is not
-evidenced here. `BWebServlet`'s registration lives in `web-rt.jar`, which was not
-read. What is evidenced is that the five path getters ignore the property.
+**Now read, and it changes the shape of the answer.** The property is not inert.
+Two live code paths read it while the five getters do not:
+
+  * `BWebServlet` (in `web-rt.jar`) registers the servlet by calling
+    `BWebServer.register(BINiagaraWebServlet)`, and that interface's only
+    identifying method is `getServletName()`. `BWebServlet` also unregisters and
+    re-registers whenever the `servletName` property changes. So the name, not
+    the hard-coded path, is the servlet's identity to the web server.
+  * `BObixServer` builds *every* `ObixEncoder` with a lobby path of
+    `"/" + getServletName()` — two construction sites in `service(WebOp)`, both a
+    `StringBuilder` of `'/'` and the property — and `BObixServer.resolve` strips
+    that same prefix off every URI it is handed, via `ObixUtils.resource`.
+
+So the hard-coded `/obix` in the five getters is what the WSDL, the stylesheet
+link and the SOAP endpoint advertise, while resolution and registration follow
+the property. A station with the property changed would be internally
+inconsistent, which is presumably why the guide gives `Servlet Name` as read-only
+and "Currently fixed at: `obix`". This client still hard-codes `/obix`: on a
+stock station the two agree, and offering a setting would imply the station
+honours one everywhere, which it does not.
+
+**Still not closed:** the URL prefix the web server derives from the servlet name
+is in `BWebServer.doRegister`, which is abstract — the concrete web server was
+not read.
 
 ## B. The lobby's children, with the one name that surprises people
 
@@ -285,7 +307,10 @@ Stated as gaps, not filled in:
      This bridge exposes no alarm tool for that reason.
   4. **The HTTP challenge** (401, `WWW-Authenticate`, scheme selection, realm) is
      not in either oBIX jar — see §D.
-  5. **Whether `servletName` moves the mount point** — see §A.
+  5. **Which URL prefix the web server derives from `servletName`** — narrowed.
+     The property is read for servlet registration and for URI resolution, and
+     ignored by the five path getters; the concrete web server's `doRegister` was
+     not read. See §A.
   6. **`signUp` is absent.** The spec's watch sign-up operation appears nowhere in
      either jar (exhaustive string grep).
   7. **No limits of any kind on concurrency or size** — see §J.
@@ -302,3 +327,50 @@ The two things most likely to differ, in order: the WatchIn body (§F — eviden
 from the decoder, but never sent to a real station), and authentication (§D — the
 challenge lives in code that was not read). `--dump` prints every request and
 reply for exactly that first run.
+
+---
+
+## M. The batch op: one POST for many reads
+
+Read after §A, because the batch op is where §A's lobby path stops being trivia.
+Added after §A–§L were written, which is why it sits at the end rather than next
+to the read verbs in §C.
+
+All of this is `com.tridium.obix.server.BBatchOp` in `obixDriver-rt.jar`, with
+`com.tridium.obix.util.ObixUtils` and `com.tridium.obix.util.Obj` in `obix-rt.jar`:
+
+```sh
+javap -p -c -cp $NIAGARA/modules/obix-rt.jar:$NIAGARA/modules/obixDriver-rt.jar \
+  com.tridium.obix.server.BBatchOp
+```
+
+| what | evidence |
+|---|---|
+| Lobby name `batch`, and it is an **op**, not a folder | `getLobbyName()` returns the literal; `encodeLobbyChild` is `Obj().initOp("batch", "obix:BatchIn", "obix:BatchOut")` with `setHref(encoder.getHref())` |
+| The request document element must be named `list` | `invoke` takes `decoder.getDocument()`, throws `IllegalArgumentException("BatchIn list not encountered.")` when it is null and `IllegalArgumentException("Expecting list element but encountered " + name)` otherwise. A WatchIn wraps its list in an `<obj>`; a BatchIn must not |
+| Each item must be named `uri` | else `Exception("Unexpected batch element: " + name)` |
+| Each item needs `val` | read as `elem.get("val", null)`; null gives `Exception("Missing val attribute: " + elem)` |
+| **`val` must be a full path containing the lobby path** | `ObixUtils.resource(encoder.getLobbyPath(), val)` is `val.indexOf(lobbyPath)` and throws `BadUriErr` on -1. The lobby path is `"/" + servletName` (§A), so `/obix/...`. Then `~` → `\|obix:` and `/\|` → `\|`, then `BObixLobby.resolve` |
+| The verb is the item's `is` attribute, matched with `contains` | `elem.get("is", "")` then `contains("obix:Read")` → `encoder.encode(OrdTarget)`; `contains("obix:Write")` → `ObixUtils.serviceWrite`; `contains("obix:Invoke")` → `ObixUtils.serviceInvoke`; anything else → `Exception("Unknown batch contract: " + elem)`. The default is the empty string, so an item with no `is` is a fault, not a read |
+| A write or invoke item needs a child **named** `in` | `ObixUtils.child("in", elem)` compares each child's `name` *attribute*, not its element name; missing gives `Exception("Batch write missing child named 'in'")` or `... invoke ...` |
+| The reply is `<list of="obix:BatchOut">`, with no `name` and no `is` | `Obj().initList(null, "obix:BatchOut")`, and `initList(name, of)` is `setElement("list")`, `setName(name)`, `setOf(of)`. A client matching on `is="obix:BatchOut"` finds nothing |
+| Every row carries back the `val` that was sent | `encoder.setHref(val)` runs before resolution, and `Obj.initErr(href, display)` takes the encoder's href — so faults carry it too, and rows can be matched by href rather than by position |
+| One bad item is one row, and the rest still run | the whole per-item body is inside one `catch (Exception)` that calls `encoder.encode(Throwable)`, and `encoder.commit()` runs at the end of every iteration |
+| A fault row is `<err href=… display=…/>`, and its `is` is optional | `ObixEncoder.encode(Throwable)` calls `abort()` first, so a half-written item is discarded, then `initErr(href, message)`. `is` is set only for `BadUriErr`/`UnresolvedException` → `obix:BadUriErr`, `PermissionErr`/`AuthenticationException`/`PermissionException` → `obix:PermissionErr`, `UnsupportedErr` → `obix:UnsupportedErr`. A plain `Exception` gets none |
+| A bad `val` displays as a Java class name | `ObixUtils.resource` throws the no-argument `BadUriErr`, whose message is null, so `encode(Throwable)` falls back to `Throwable.toString()`. `batch.py` translates that one string rather than showing it |
+| A document-level failure is one `<err>` document, not an empty BatchOut | the throw happens before the reply list is opened; `BObixServer.service(WebOp)` catches it, builds a fresh encoder and calls `encode(Throwable)`. It sets no HTTP error status, so this arrives as a 200 |
+
+**What the bridge does with it.** `obix_batch_read` builds read items and nothing
+else. The batch op is the one place where the write gates in `obix.py` could be
+walked around — a batch write is a POST to the batch op, not a PUT to a point, so
+neither `--allow-write` nor `--write-allow` is consulted on the way past. The
+defence is not a check in the batch path, which a later edit could relax: it is
+that `batch.py` has no verb argument and never passes a caller's `is` through.
+`tests/test_batch.py` asserts that no code in the module names another contract,
+and separately drives a hand-written batch write at the fixture to show the
+fixture would have performed it. The test is about what the bridge can express.
+
+**Not tested against a station.** Like §F, all of this is read out of bytecode and
+proved against a fixture written from it. The batch reply's exact `href` form on a
+real JACE is the most likely thing to differ, which is why rows are matched by
+href *and* the hrefs with no row are reported rather than dropped.

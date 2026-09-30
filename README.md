@@ -85,6 +85,7 @@ Flags:
 | `obix_about` | product, version, vendor, server time — the cheapest confirmation you are talking to the station you think you are. |
 | `obix_lobby` | the top of the tree, plus the documented branches this station lacks. |
 | `obix_read` | one object by href, to a bounded depth. |
+| `obix_batch_read` | several objects in one POST to the station's own batch op, with a fault row in place of anything that failed. Reads only. |
 | `obix_watch_open` | a server-side watch on a set of hrefs, and the first reading of each. |
 | `obix_watch_poll` | what changed since the last poll, or everything with `refresh`. |
 | `obix_watch_follow` | poll for N seconds and return every change, with the interval clamped. |
@@ -100,7 +101,13 @@ This list is the design, not a disclaimer:
     allowlist an agent can step around is decoration. Hrefs are resolved against
     `/obix` on the configured host and anything outside it is refused before a
     socket opens.
-  * **No batch write, and no write without two separate decisions** — this
+  * **No batch write.** The station's batch operation services writes and invokes
+    as well as reads, and it is reached by POSTing to the batch op rather than by
+    PUTting to a point — so it is the obvious way past the two gates below.
+    `obix_batch_read` builds read items and has no verb argument to set; the
+    module names no other contract, and a test asserts that, so the way past has
+    to be added deliberately rather than found.
+  * **No write without two separate decisions** — this
     deployment may write (`--allow-write`), and it may write *there*
     (`--write-allow`). A write to a Niagara point is a plant movement at a
     priority level, not a variable assignment.
@@ -124,10 +131,12 @@ This list is the design, not a disclaimer:
 ```
 obix_mcp/obix.py    the protocol client: paths, decode, read, write, faults
 obix_mcp/watch.py   watches, leases, poll intervals
+obix_mcp/batch.py   one POST for many reads, and why it cannot carry a write
 obix_mcp/server.py  the MCP layer: tool schemas, JSON-RPC over stdio, the gates
 tests/fixture_station.py   an oBIX server built from EVIDENCE.md, not the spec
 tests/test_obix.py         the client
 tests/test_server.py       the tool surface and the gates
+tests/test_batch.py        the batch wire format, and that it cannot write
 EVIDENCE.md         every protocol decision, and where it came from
 ```
 

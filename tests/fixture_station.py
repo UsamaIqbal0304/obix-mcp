@@ -10,6 +10,12 @@ differ:
   * the lobby's export branch is named continuousControl;
   * a watch is leased for 30 seconds and its ops are add, remove, pollChanges,
     pollRefresh and delete;
+  * the batch branch is an op, a BatchIn's document element is `list` and its
+    items are `uri` elements whose `val` must carry the lobby path, one bad item
+    is one fault row among the readings, and the reply is a `<list
+    of="obix:BatchOut">` with no `is` — and batch *writes* are serviced here,
+    because the station services them and a fixture that could not write would
+    make the bridge's read-only batch look proved when it was not;
   * with --mode disabled every request is 410 "oBIX Server Disabled", and with
     --mode unlicensed every request is 403 "Unlicensed oBIX Server", which are
     the two codes and the two literal strings the station's own servlet sends.
@@ -55,6 +61,11 @@ def _xa(s):
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 
+class BatchDocError(Exception):
+    """A BatchIn whose document element is not `list`. The station throws before
+    it has written anything, so the reply is one err document."""
+
+
 class Station:
     """The object tree, and the watches held against it."""
 
@@ -82,6 +93,14 @@ class Station:
         for name in ("about", "alarm", "alarms", "def", "units", "config",
                      "histories", "continuousControl", "bql", "ord", "batch",
                      "watchService"):
+            if name == "batch":
+                # BBatchOp.encodeLobbyChild is initOp("batch", "obix:BatchIn",
+                # "obix:BatchOut") with the href the encoder is already holding,
+                # so the batch branch arrives as an op and not as a ref to a
+                # folder. The client takes this href rather than building one.
+                kids += ('<op name="batch" href="batch" in="obix:BatchIn" '
+                         'out="obix:BatchOut"/>')
+                continue
             is_ = ' is="obix:WatchService"' if name == "watchService" else ""
             kids += f'<ref name="{name}" href="{name}/"{is_}/>'
         return f'<obj {NS} href="/obix/" is="obix:Lobby">{kids}</obj>'
@@ -146,6 +165,95 @@ class Station:
         # station's own encoder writes, `of` included.
         return (f'<obj {NS} is="obix:WatchOut">'
                 f'<list name="values" of="obix:obj">{items}</list></obj>')
+
+    # --------------------------------------------------------------- batch op
+
+    # ObixEncoder's lobbyPath, which BObixServer builds as "/" + servletName and
+    # ObixUtils.resource strips off every val in a BatchIn. It is not the
+    # hard-coded getServletPath(), which is a different string that happens to
+    # read the same on a stock station.
+    lobby_path = "/obix"
+
+    def batch_xml(self, body):
+        """Answer a BatchIn item by item, the way BBatchOp.invoke does.
+
+        This fixture is deliberately *more* capable than the bridge: BBatchOp
+        services obix:Write and obix:Invoke items as well as reads, so this does
+        too. Proving the bridge cannot write in a batch against a fixture that
+        could not write anyway would prove nothing.
+        """
+        doc = ET.fromstring(body.decode("utf-8"))
+        if doc.tag.rsplit("}", 1)[-1] != "list":
+            # invoke() throws before the reply is opened, so the whole document
+            # is a fault rather than a BatchOut with fault rows in it.
+            raise BatchDocError("Expecting list element but encountered "
+                                + doc.tag.rsplit("}", 1)[-1])
+        rows = "".join(self._batch_item(el) for el in list(doc))
+        # Obj().initList(null, "obix:BatchOut"), and initList is setName/setOf:
+        # a list with `of`, with no name and no `is`.
+        return f'<list {NS} of="obix:BatchOut">{rows}</list>'
+
+    def _batch_item(self, el):
+        name = el.tag.rsplit("}", 1)[-1]
+        # Every one of these failures is caught per item by BBatchOp's own
+        # try/catch, encoded as an err in place, and the loop carries on.
+        if name != "uri":
+            return self._batch_err("", "Unexpected batch element: " + name)
+        val = el.attrib.get("val")
+        if val is None:
+            return self._batch_err("", f'Missing val attribute: <{name}/>')
+        if self.lobby_path not in val:
+            # ObixUtils.resource throws a no-argument BadUriErr, whose getMessage
+            # is null, so the encoder falls back to Throwable.toString() and the
+            # display an operator sees is a Java class name.
+            return self._batch_err(val, "com.tridium.obix.util.BadUriErr",
+                                   "obix:BadUriErr")
+        rest = val[val.index(self.lobby_path) + len(self.lobby_path):]
+        if rest in ("", "/"):
+            rest = "/"
+        elif rest.endswith("/"):
+            rest = rest[:-1]
+        key = rest.lstrip("/") + "/"
+        contract = el.attrib.get("is", "")
+        # The dispatch is `contains`, not equality, and `is` defaults to the
+        # empty string — so an item with no contract is a fault, not a read.
+        if "obix:Read" in contract:
+            if key not in self.points:
+                return self._batch_err(val, "no such object", "obix:BadUriErr")
+            return self.point_xml(key).replace(f'href="/obix/{key}"',
+                                               f'href="{_xa(val)}"')
+        if "obix:Write" in contract:
+            # ObixUtils.child("in", elem) matches on the *name attribute* of a
+            # child, not on its element name.
+            child = next((c for c in list(el) if c.attrib.get("name") == "in"), None)
+            if child is None:
+                return self._batch_err(val, "Batch write missing child named 'in'")
+            if key not in self.points:
+                return self._batch_err(val, "no such object", "obix:BadUriErr")
+            tag, _v, _u, writable = self.points[key]
+            if not writable:
+                return self._batch_err(val, "not writable", "obix:PermissionErr")
+            raw = child.attrib.get("val", "")
+            self.points[key][1] = ((raw == "true") if tag == "bool"
+                                   else float(raw) if tag == "real"
+                                   else int(raw) if tag == "int" else raw)
+            self.writes.append((key, tag, self.points[key][1]))
+            return self.point_xml(key).replace(f'href="/obix/{key}"',
+                                               f'href="{_xa(val)}"')
+        if "obix:Invoke" in contract:
+            child = next((c for c in list(el) if c.attrib.get("name") == "in"), None)
+            if child is None:
+                return self._batch_err(val, "Batch invoke missing child named 'in'")
+            return self._batch_err(val, "nothing under this fixture is invocable")
+        return self._batch_err(val, f'Unknown batch contract: <{name} val="{val}"/>')
+
+    def _batch_err(self, href, display, contract=""):
+        """One fault row: initErr(href, display) is `<err href= display=>`, and
+        the `is` attribute appears only for the exception types the encoder maps.
+        A plain Exception carries none, which is why it is optional here."""
+        is_ = f' is="{contract}"' if contract else ""
+        h = f' href="{_xa(href)}"' if href else ""
+        return f'<err{h}{is_} display="{_xa(display)}"/>'
 
     def histories_xml(self):
         return (f'<obj {NS} href="/obix/histories/">'
@@ -279,6 +387,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._xml(200, st.point_xml(href))
 
         # POST is invoke.
+        if href in ("batch", "batch/"):
+            try:
+                return self._xml(200, st.batch_xml(body))
+            except BatchDocError as exc:
+                # The servlet catches the throw, builds a fresh encoder and
+                # calls encode(Throwable): a 200 carrying one err document, not
+                # an HTTP error status.
+                return self._xml(200, f'<err {NS} href="/obix/batch" '
+                                      f'display="{_xa(exc)}"/>')
         m = re.match(r"^watchService/make/?$", href)
         if m:
             return self._xml(200, st.watch_xml(st.next_watch()))

@@ -22,11 +22,14 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 
-# BObixServer.getServletPath() is a hard `ldc "/obix"` in the bytecode. It does
-# not read the `servletName` property that sits right next to it, so a station
-# with servletName changed still serves the tree at /obix. Not configurable
-# here either, for the same reason: making it a setting would imply the station
-# honours one.  EVIDENCE.md §A
+# BObixServer.getServletPath() is a hard `ldc "/obix"` in the bytecode, and so
+# are the soap, wsdl, xsd and xsl paths beside it. None of them reads the
+# `servletName` property, but two other code paths do: the servlet is registered
+# with the web server under that name, and every encoder is built with a lobby
+# path of "/" + servletName, which is the prefix a URI in a request body must
+# carry. On a stock station all of that agrees on /obix. Not configurable here,
+# because a setting would imply the station honours one everywhere — and where
+# the two disagree the station is misconfigured, not flexible.  EVIDENCE.md §A
 SERVLET_PATH = "/obix"
 
 OBIX_NS = "http://obix.org/ns/schema/1.0"
