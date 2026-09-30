@@ -233,12 +233,23 @@ request** rather than waiting to be challenged: the pre-emptive path is handled 
 issuing a challenge. Waiting for the challenge is the path that leads into the
 session-bound `AuthMessage` handshake instead.
 
-One honest limit: both handlers are agents on the same scheme, and **which one a given
-request gets is resolved by Niagara's agent lookup, which was not read.** The claim
-here is about what each handler does and what the authenticator does with the result,
-not about the selection rule. What this does establish is that a station's 401 to an
-oBIX client carries no realm, and that the credential-parsing path uses the default
-charset.
+**Which handler a given request gets, resolved.** Both handlers are agents on the same
+scheme, so the choice is made where `NiagaraAuthenticator.authenticateHeader` asks the
+registry for one. It decodes the `Authorization` header as an `AuthMessage` and branches
+on the scheme token: the literal **`HELLO`** (Niagara's own two-step handshake) makes it
+call `scheme.getAgentOn(BHttpHeaderCallbackHandler.class)`, which returns the
+challenge-only `BHttpBasicCallbackHandler`; **anything else — a normal `Basic <base64>`
+credential — makes it call `getAgentOn(BWebCallbackHandler.class)`, which returns the
+RFC 7617 `BWebHTTPBasicCallbackHandler`.** Both concrete handlers share the abstract
+supertype `BHttpCallbackHandler`, so the authenticator casts to that and calls
+`handleRequest` polymorphically. The disambiguation is by requested base class, not by
+any per-scheme priority: `BWebHTTPBasicCallbackHandler extends BWebCallbackHandler` and
+`BHttpBasicCallbackHandler extends BHttpHeaderCallbackHandler`, and only one of the two
+agents is assignable to each. So a pre-emptive `Authorization: Basic …` — never the
+`HELLO` token — is routed to the RFC 7617 handler every time, the same handler whose
+decode uses the default charset. This establishes that a station's 401 to an oBIX client
+carries no realm, that the credential-parsing path uses the default charset, and now
+which handler that path is.
 
 ## E. Two write paths, and the export descriptor is only one of them
 
@@ -483,8 +494,10 @@ Stated as gaps, not filled in:
      `n4HTTPbasic` over `UsernamePasswordLoginModule`, two callback handlers are
      registered on it (one real RFC 7617, one challenge-only), and the challenge jetty
      emits is `WWW-Authenticate: BASIC handshakeToken=<web session id>` with **no
-     realm**. What remains unread is only the agent-selection rule that picks between
-     the two handlers.
+     realm**. The agent-selection rule that picks between the two handlers is now read
+     too (§D.1): `NiagaraAuthenticator` branches on the `Authorization` scheme token —
+     the literal `HELLO` routes to the challenge-only handler, a normal `Basic`
+     credential to the RFC 7617 one, via `getAgentOn` of two different base classes.
   5. **Which URL prefix the web server derives from `servletName`** — narrowed.
      The property is read for servlet registration and for URI resolution, and
      ignored by the five path getters; the concrete web server's `doRegister` was

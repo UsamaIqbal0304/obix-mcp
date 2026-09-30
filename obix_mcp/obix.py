@@ -372,8 +372,11 @@ class ObixClient:
             # scheme: the RFC 7617 one, which parses a header that is already
             # there and proceeds straight to the login module, and a
             # challenge-only one that answers 401 with Niagara's own AuthMessage
-            # and a session-bound handshakeToken. Sending credentials up front
-            # stays on the first path. UTF-8 here is this client's choice; the
+            # and a session-bound handshakeToken. Which one answers is decided
+            # by the Authorization scheme token, and a `Basic` credential is
+            # never Niagara's `HELLO` handshake token, so sending credentials up
+            # front reaches the RFC 7617 handler every time. UTF-8 here is this
+            # client's choice; the
             # station decodes with `new String(bytes)` and no charset argument,
             # so a non-ASCII password can disagree.  EVIDENCE.md §D.1
             token = base64.b64encode(f"{user}:{password}".encode("utf-8")).decode("ascii")
