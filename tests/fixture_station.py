@@ -103,6 +103,10 @@ class Station:
     """The object tree, and the watches held against it."""
 
     def __init__(self):
+        # When True, about_xml mimics a stock Niagara station: the frozen
+        # "Niagara AX" product name and the two Tridium extension fields. Default
+        # off so the fixture stays a generic (non-Tridium) oBIX server.
+        self.niagara_about = False
         # href -> (tag, value, unit, writable)
         self.points = {
             "config/AHU-01/SupplyAirTemp/": ["real", 13.4, "obix:units/celsius", False],
@@ -191,6 +195,19 @@ class Station:
         return f'<obj {NS} href="/obix/" is="obix:Lobby">{kids}</obj>'
 
     def about_xml(self):
+        if self.niagara_about:
+            # A stock Niagara 4 station: the frozen AX brand and the two Tridium
+            # extension fields that sit outside the oBIX About contract.
+            return (f'<obj {NS} href="/obix/about/" is="obix:About">'
+                    f'<str name="obixVersion" val="1.0"/>'
+                    f'<str name="serverName" val="jace"/>'
+                    f'<str name="vendorName" val="Tridium, Inc."/>'
+                    f'<str name="productName" val="Niagara AX"/>'
+                    f'<str name="productVersion" val="4.14.0.162"/>'
+                    f'<str name="tz" val="America/New_York"/>'
+                    f'<str name="componentCount" val="4213"/>'
+                    f'<str name="localHistoryCount" val="87"/>'
+                    f'<abstime name="serverTime" val="2026-09-30T12:00:00Z"/></obj>')
         return (f'<obj {NS} href="/obix/about/" is="obix:About">'
                 f'<str name="obixVersion" val="1.0"/>'
                 f'<str name="serverName" val="fixture"/>'

@@ -54,6 +54,18 @@ LOBBY_CHILDREN = (
 # a branch no station shows.  EVIDENCE.md §N
 UNLISTED_BRANCHES = ("alarm", "bql", "def", "ord", "units")
 
+# The oBIX About contract is this fixed set of fields. Niagara freezes some of
+# their defaults (productName is the literal "Niagara AX", never overwritten) and
+# adds two of its own outside the contract — componentCount (the station's
+# component count) and localHistoryCount — so /obix/about hands a read-only
+# client a station-size readout. Only serverTime is refreshed per request; the
+# rest are a snapshot from when the About type first loaded.  EVIDENCE.md §O
+ABOUT_CONTRACT = (
+    "obixVersion", "serverName", "serverTime", "serverBootTime",
+    "vendorName", "vendorUrl", "productName", "productVersion",
+    "productUrl", "tz",
+)
+
 # BObixServer.service(WebOp) switches on the uppercased request method:
 # GET encodes the resolved target (read), PUT calls ObixUtils.serviceWrite,
 # POST invokes. The station's WSDL declares the same three as obixRead,

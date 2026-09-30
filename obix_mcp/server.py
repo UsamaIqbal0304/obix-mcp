@@ -31,7 +31,7 @@ import time
 
 from .alarms import DEFAULT_ALARM_LIMIT, MAX_ALARM_LIMIT, open_alarms
 from .batch import MAX_BATCH_ITEMS, read_many
-from .obix import (LOBBY_CHILDREN, SERVLET_PATH, UNLISTED_BRANCHES,
+from .obix import (ABOUT_CONTRACT, LOBBY_CHILDREN, SERVLET_PATH, UNLISTED_BRANCHES,
                    ObixClient, ObixError)
 from .watch import Watch, changes_to_rows, make_watch, safe_interval
 
@@ -74,7 +74,36 @@ class Bridge:
     def tool_about(self) -> dict:
         obj = self.client.about()
         out = {c.name: c.value() for c in obj.children if c.name}
-        return {"station": out, "href": obj.href or SERVLET_PATH + "/about/"}
+        # Name what is non-standard rather than hand back a flat dict, exactly as
+        # tool_lobby names what a lobby omits. Any field outside the oBIX About
+        # contract is reported; the Niagara-specific reading is added only when the
+        # response actually looks like a Niagara station, so this stays honest
+        # against any oBIX server.  EVIDENCE.md §O
+        non_standard = sorted(n for n in out if n not in ABOUT_CONTRACT)
+        # The definitive Niagara tell is a field Tridium adds outside the About
+        # contract, or a product name that says Niagara — not a vendor substring
+        # (the test fixture calls itself "Not Tridium", which contains "Tridium").
+        looks_niagara = (
+            "Niagara" in str(out.get("productName", ""))
+            or any(n in out for n in ("componentCount", "localHistoryCount")))
+        notes = []
+        if non_standard:
+            notes.append(
+                "Fields outside the oBIX About contract: " + ", ".join(non_standard)
+                + ". On Niagara these are componentCount (the station's component "
+                  "count) and localHistoryCount — a station-size readout Tridium adds.")
+        if out.get("productName") == "Niagara AX":
+            notes.append(
+                "productName is the literal 'Niagara AX': a Niagara 4 station reports "
+                "the pre-4.0 brand because it is a frozen default the oBIX driver never "
+                "overwrites, not a misconfiguration of this station.")
+        if looks_niagara:
+            notes.append(
+                "On a Niagara station only serverTime is refreshed per request; the "
+                "other fields are a snapshot from when the About type first loaded, so "
+                "componentCount is not a live count.")
+        return {"station": out, "href": obj.href or SERVLET_PATH + "/about/",
+                "non_standard_fields": non_standard, "notes": notes}
 
     def tool_lobby(self) -> dict:
         obj = self.client.lobby()
@@ -271,7 +300,9 @@ def tool_schemas(writes_enabled: bool) -> list[dict]:
         dict(name="obix_about",
              description="Read the station's oBIX about object: product name, version, "
                          "vendor and server time. The cheapest way to confirm the bridge "
-                         "is talking to the station you think it is.",
+                         "is talking to the station you think it is. Reports any field "
+                         "outside the oBIX About contract and, on a Niagara station, "
+                         "what its quirks mean.",
              inputSchema={"type": "object", "properties": {}}),
         dict(name="obix_lobby",
              description="List the top level of the station's oBIX tree, and name the "

@@ -392,6 +392,28 @@ class TestStartup(unittest.TestCase):
         self.assertEqual(client.write_allowlist, ["config/AHU-01/"])
 
 
+class TestAbout(Base):
+    def test_a_plain_obix_server_gets_no_niagara_reading(self):
+        # The fixture is a generic (non-Tridium) oBIX server. tool_about must not
+        # invent Niagara quirks for it: nothing is outside the About contract and
+        # no Niagara-specific note fires.
+        out = self.bridge().tool_about()
+        self.assertEqual(out["non_standard_fields"], [])
+        self.assertEqual(out["notes"], [])
+
+    def test_a_niagara_station_gets_its_quirks_named(self):
+        # A stock Niagara station: the AX brand and the two extension fields.
+        self.station.niagara_about = True
+        out = self.bridge().tool_about()
+        self.assertEqual(out["non_standard_fields"],
+                         ["componentCount", "localHistoryCount"])
+        self.assertEqual(out["station"]["componentCount"], "4213")
+        joined = " ".join(out["notes"])
+        self.assertIn("outside the oBIX About contract", joined)
+        self.assertIn("Niagara AX", joined)
+        self.assertIn("only serverTime is refreshed", joined)
+
+
 class TestDump(Base):
     def test_dump_shows_the_bodies_and_never_the_credentials(self):
         # --dump exists so the SPEC-DERIVED watch bodies can be checked against
