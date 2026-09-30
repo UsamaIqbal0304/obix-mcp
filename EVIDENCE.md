@@ -82,9 +82,20 @@ and "Currently fixed at: `obix`". This client still hard-codes `/obix`: on a
 stock station the two agree, and offering a setting would imply the station
 honours one everywhere, which it does not.
 
-**Still not closed:** the URL prefix the web server derives from the servlet name
-is in `BWebServer.doRegister`, which is abstract — the concrete web server was
-not read.
+**Closed.** The concrete web server is `com.tridium.jetty.BJettyWebServer`. Its
+`doRegister(BINiagaraWebServlet)` rejects the name unless `SlotPath.isValidName`
+holds — an invalid name logs `web.badServletName` and is never mapped — and refuses
+a second servlet under a name already taken (`web.duplicateServlet`). The mapping is
+in `addWebServlet`'s privileged action: it builds a jetty `ServletContextHandler`
+whose **context path is `"/" + getServletName()`** (a `StringBuilder` of `'/'` and
+the name — the very construction §A already found for the lobby path), mounts the
+servlet at `/*` inside it, and calls `setAllowNullPathInfo(true)`, so the bare
+context path with no trailing slash — `GET /obix` — still reaches the servlet. So
+the jetty mount point and the lobby path derive from the *same* `"/" + servletName`
+and agree; only the five getters diverge, by returning fixed literals. That is the
+whole of "not configurable in practice": changing the name moves the mount and the
+resolver together but leaves the advertised literals at `/obix`, so the WSDL, SOAP
+endpoint and stylesheet link would name a servlet that is no longer there. Closes §K.5.
 
 ## B. The lobby's children, with the one name that surprises people
 
@@ -498,10 +509,12 @@ Stated as gaps, not filled in:
      too (§D.1): `NiagaraAuthenticator` branches on the `Authorization` scheme token —
      the literal `HELLO` routes to the challenge-only handler, a normal `Basic`
      credential to the RFC 7617 one, via `getAgentOn` of two different base classes.
-  5. **Which URL prefix the web server derives from `servletName`** — narrowed.
-     The property is read for servlet registration and for URI resolution, and
-     ignored by the five path getters; the concrete web server's `doRegister` was
-     not read. See §A.
+  5. ~~**Which URL prefix the web server derives from `servletName`.**~~ **Closed in §A.**
+     `com.tridium.jetty.BJettyWebServer.doRegister` mounts the servlet at jetty
+     context path `"/" + getServletName()` (with `/*` under it and
+     `setAllowNullPathInfo(true)`), the same `"/" + servletName` the lobby path and the
+     resolver use. The five getters return fixed `/obix` literals, so the mount and the
+     advertised paths only agree while the name is left at its default.
   6. **`signUp` is absent.** The spec's watch sign-up operation appears nowhere in
      either jar (exhaustive string grep).
   7. **No limits of any kind on concurrency or size** — see §J.
