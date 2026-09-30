@@ -152,6 +152,9 @@ class TestReads(Base):
         payload, err = self.call(self.stdio(), "obix_lobby")
         self.assertFalse(err, payload)
         self.assertEqual(payload["documented_but_absent"], ["histories"])
+        # The unlisted branch is reported as unlisted, not as missing: it is
+        # absent from every station's lobby, including a complete one.
+        self.assertEqual(payload["unlisted_branches"], ["alarm"])
 
     def test_a_complete_lobby_reports_nothing_absent(self):
         payload, err = self.call(self.stdio(), "obix_lobby")
@@ -280,20 +283,47 @@ class TestHistory(Base):
     def test_without_a_query_it_lists_the_stations_own_queries(self):
         payload, err = self.call(self.stdio(), "obix_history", href=self.FEED)
         self.assertFalse(err, payload)
-        self.assertIn("Today", payload["queries"])
+        # Tridium's own names, not the prose spelling in the documentation.
+        self.assertIn("last24Hours", payload["queries"])
+        self.assertIn("yearToDate (limit=1000)", payload["queries"])
+        # The four ops are listed as things this tool will not invoke, and one
+        # of them writes records into the history.
+        self.assertEqual(sorted(payload["ops_this_tool_will_not_invoke"]),
+                         ["append", "feed", "query", "rollup"])
 
     def test_a_query_is_followed_by_the_stations_href_not_a_guessed_one(self):
         payload, err = self.call(self.stdio(), "obix_history", href=self.FEED,
                                  query="last 24 hours")
         self.assertFalse(err, payload)
-        self.assertEqual(payload["query"], "Last 24 Hours")
-        self.assertIn("~last24", payload["href"])
+        self.assertEqual(payload["query"], "last24Hours")
+        # The station's href is relative and carries the bounds:
+        # `~historyQuery?start=...&end=...`. It resolves under the history, and
+        # the query string has to survive both the resolution and the request.
+        self.assertTrue(payload["href"].startswith(
+            "/obix/histories/AHU-01/SupplyAirTemp/~historyQuery?start="), payload["href"])
+        asked = {c["name"]: c["value"] for c in payload["result"]["children"]
+                 if c.get("name", "").startswith("asked-")}
+        self.assertEqual(sorted(asked), ["asked-end", "asked-start"])
+
+    def test_a_bracketed_name_is_reachable_by_its_leading_word(self):
+        payload, err = self.call(self.stdio(), "obix_history", href=self.FEED,
+                                 query="yearToDate")
+        self.assertFalse(err, payload)
+        self.assertEqual(payload["query"], "yearToDate (limit=1000)")
+        self.assertIn("limit=1000", payload["href"])
+
+    def test_an_op_cannot_be_reached_by_naming_it_as_a_query(self):
+        text, err = self.call(self.stdio(), "obix_history", href=self.FEED,
+                              query="append")
+        self.assertTrue(err)
+        self.assertIn("writes records into the history", text)
+        self.assertEqual(self.station.history_appends, [])
 
     def test_an_unknown_query_lists_what_the_feed_offers(self):
         text, err = self.call(self.stdio(), "obix_history", href=self.FEED,
                               query="last decade")
         self.assertTrue(err)
-        self.assertIn("Today", text)
+        self.assertIn("last24Hours", text)
         self.assertIn("does not construct history URLs", text)
 
 

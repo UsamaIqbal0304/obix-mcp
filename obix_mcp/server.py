@@ -29,8 +29,10 @@ import os
 import sys
 import time
 
+from .alarms import DEFAULT_ALARM_LIMIT, MAX_ALARM_LIMIT, open_alarms
 from .batch import MAX_BATCH_ITEMS, read_many
-from .obix import LOBBY_CHILDREN, SERVLET_PATH, ObixClient, ObixError
+from .obix import (LOBBY_CHILDREN, SERVLET_PATH, UNLISTED_BRANCHES,
+                   ObixClient, ObixError)
 from .watch import Watch, changes_to_rows, make_watch, safe_interval
 
 NAME = "obix-mcp"
@@ -46,6 +48,16 @@ MAX_WATCHES = 4
 MAX_HREFS_PER_WATCH = 200
 
 
+def _norm(label: str) -> str:
+    """Fold a label for comparison: case and spaces only.
+
+    Two of the station's canned query names carry a space inside the `name`
+    attribute, so an agent will type them with different spacing than the
+    station used.
+    """
+    return "".join((label or "").split()).lower()
+
+
 class Bridge:
     def __init__(self, client: ObixClient):
         self.client = client
@@ -55,6 +67,7 @@ class Bridge:
         # station configuration, and a controller does not need a second request
         # to tell us the same thing.
         self.batch_op = ""
+        self.alarms_op = ""
 
     # ------------------------------------------------------------------ tools
 
@@ -74,8 +87,12 @@ class Bridge:
         # exposed, and an agent that does not know that will keep asking.
         absent = [n for n in LOBBY_CHILDREN if n not in present]
         return {"children": children, "documented_but_absent": absent,
+                "unlisted_branches": list(UNLISTED_BRANCHES),
                 "note": ("The export branch is mounted as 'continuousControl', not "
-                         "'export' — that is the station's own name for it.")}
+                         "'export' — that is the station's own name for it. "
+                         "/obix/alarm/<uuid> resolves one alarm record by its Niagara "
+                         "UUID and appears in no lobby listing, so nothing that walks "
+                         "this list will find it.")}
 
     def tool_read(self, href: str, depth: int = 2) -> dict:
         return self.client.read(href).as_dict(depth=max(0, min(int(depth), 6)))
@@ -104,6 +121,20 @@ class Bridge:
             raise ObixError(f"{type!r} is not an oBIX value type")
         obj = self.client.write(href, type, value)
         return {"written": True, "href": href, "result": obj.as_dict(depth=1)}
+
+    def tool_alarms(self, start: str = "", end: str = "", limit: int = 0,
+                    scope: str = "") -> dict:
+        """Open alarms, through the alarm service's own query op.
+
+        The op href is cached per session like the batch one, but only for the
+        unscoped case: a scoped call names a different subject, and reusing the
+        service's op for it would answer a question nobody asked.
+        """
+        out = open_alarms(self.client, start=start, end=end, limit=limit,
+                          scope=scope, op="" if scope else self.alarms_op)
+        if not scope and out.get("op"):
+            self.alarms_op = out["op"]
+        return out
 
     def tool_watch_open(self, hrefs: list[str]) -> dict:
         if len(self.watches) >= MAX_WATCHES:
@@ -165,24 +196,51 @@ class Bridge:
         Tridium documents that histories are exposed to oBIX clients "through a
         predefined set of query options, available as Lobby URIs using the HTTP
         GET mechanism (without an oBIX op)" and names Today, Last 24 Hours and
-        Yesterday among them. It does not publish the URL template, so this
-        tool asks the station: it reads the feed object and uses the href of the
-        child whose name or display matches, rather than guessing a path.
-        EVIDENCE.md §G"""
+        Yesterday among them. It does not publish the URL template, so this tool
+        asks the station.  EVIDENCE.md §G
+
+        What the station actually writes is narrower than the documentation reads,
+        and `BObixHistoryAgent.encodeFinishing` is where it is settled:
+
+          * the canned queries are `ref` elements — a GET follows them — and
+            their names are `today`, `last24Hours`, `yesterday`, `weekToDate`,
+            `lastWeek`, `last7Days`, `monthToDate`, `lastMonth`, plus
+            `unboundedQuery` and two whose name carries a bracket,
+            `yearToDate (limit=1000)` and `lastYear (limit=1000)`. Their hrefs
+            are relative and already carry the bounds:
+            `~historyQuery?start=...&end=...`.
+          * beside them are four *ops*, which a GET cannot use at all: `query`,
+            `rollup`, `feed` and `append`. `append` writes records into the
+            history, so this tool refuses to touch any of them rather than
+            reaching one by name.  EVIDENCE.md §N
+        """
         feed = self.client.read(href)
+        base = feed.href or href
+        canned = [c for c in feed.children if c.tag == "ref" and (c.name or c.display)]
+        ops = [c.name for c in feed.children if c.tag in ("op", "feed") and c.name]
         if not query:
-            return {"href": href, "feed": feed.as_dict(depth=2),
-                    "queries": [c.name or c.display for c in feed.children
-                                if c.tag == "op" or c.name]}
-        want = query.strip().lower().replace(" ", "")
-        for c in feed.children:
+            return {"href": base, "feed": feed.as_dict(depth=2),
+                    "queries": [c.name or c.display for c in canned],
+                    "ops_this_tool_will_not_invoke": ops}
+        want = _norm(query)
+        for c in canned:
             for label in (c.name, c.display, c.display_name):
-                if label and label.strip().lower().replace(" ", "") == want:
+                # The bracketed names are matched on their leading word too, so
+                # `yearToDate` reaches `yearToDate (limit=1000)`. The station's
+                # own spelling is what comes back in the reply.
+                if label and want in (_norm(label), _norm(label).split("(")[0]):
                     if not c.href:
                         raise ObixError(f"the station's {label!r} query has no href")
                     return {"href": c.href, "query": label,
                             "result": self.client.read(c.href).as_dict(depth=3)}
-        available = [c.name or c.display for c in feed.children if c.name or c.display]
+        if any(want == _norm(o) for o in ops):
+            raise ObixError(
+                f"{query!r} is an op on this history, not one of its canned queries. "
+                f"An op is invoked with a POST carrying a filter document, and one of "
+                f"the four — append — writes records into the history. This tool reads, "
+                f"so it invokes none of them. Ask for one of: "
+                f"{', '.join(c.name or c.display for c in canned) or '(none listed)'}")
+        available = [c.name or c.display for c in canned]
         raise ObixError(
             f"{query!r} is not a query this feed offers. It offers: "
             f"{', '.join(available) or '(none listed)'}. These are the station's own "
@@ -239,6 +297,31 @@ def tool_schemas(writes_enabled: bool) -> list[dict]:
                  "hrefs": {"type": "array", "items": {"type": "string"},
                            "maxItems": MAX_BATCH_ITEMS,
                            "description": "hrefs from the lobby or a previous read"}}}),
+        dict(name="obix_alarms",
+             description="What is in alarm on the station right now. Uses the alarm "
+                         "service's own query operation, which is the only way a station "
+                         "reports its alarms over oBIX — they are in no folder and the "
+                         "branch that serves one record by UUID appears in no lobby "
+                         "listing. Each row carries the source, the message, the class, "
+                         "the priority and the times, plus the record's Niagara UUID. "
+                         "Reads only: this tool cannot acknowledge, clear or change an "
+                         "alarm, whatever the station's records offer.",
+             inputSchema={"type": "object", "properties": {
+                 "start": {"type": "string",
+                           "description": "oBIX abstime lower bound, e.g. "
+                                          "'2026-09-30T00:00:00Z'. Omit for no bound."},
+                 "end": {"type": "string",
+                         "description": "oBIX abstime upper bound. Omit for no bound."},
+                 "limit": {"type": "integer", "minimum": 1,
+                           "maximum": MAX_ALARM_LIMIT,
+                           "default": DEFAULT_ALARM_LIMIT,
+                           "description": "Records to ask the station for. The station "
+                                          "applies this, so a small limit is a small "
+                                          "reply, not a truncated large one."},
+                 "scope": {"type": "string",
+                           "description": "Optional href of one alarm class, from the "
+                                          "alarms branch, to ask instead of the whole "
+                                          "service."}}}),
         dict(name="obix_watch_open",
              description="Open a server-side watch on a set of hrefs and return the first "
                          "reading of each. A watch is how you follow changing values "
@@ -364,6 +447,9 @@ class Stdio:
                                                          args.get("type", ""),
                                                          args.get("value")),
             "obix_batch_read": lambda: self.bridge.tool_batch_read(args.get("hrefs") or []),
+            "obix_alarms": lambda: self.bridge.tool_alarms(
+                args.get("start", ""), args.get("end", ""),
+                int(args.get("limit") or 0), args.get("scope", "")),
             "obix_watch_open": lambda: self.bridge.tool_watch_open(args.get("hrefs") or []),
             "obix_watch_poll": lambda: self.bridge.tool_watch_poll(
                 args.get("watch", ""), bool(args.get("refresh"))),

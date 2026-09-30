@@ -14,8 +14,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from obix_mcp.obix import (LOBBY_CHILDREN, SERVLET_PATH, ObixClient, ObixError,
-                           ObixFault, decode, encode_value)
+from obix_mcp.obix import (LOBBY_CHILDREN, UNLISTED_BRANCHES, SERVLET_PATH, ObixClient, ObixError,
+                           ObixFault, decode, encode_value, resolve_href)
 from obix_mcp.watch import _reltime_seconds, changes_to_rows, make_watch, safe_interval
 from tests import fixture_station
 
@@ -92,11 +92,82 @@ class TestDecode(unittest.TestCase):
         self.assertNotIn("<angled>", out)
 
 
+class TestHrefResolution(unittest.TestCase):
+    """The rule in ObixEncoder.getChildHref, which configChild puts in front of
+    every component child — so it governs the whole tree, not a few ops.
+    EVIDENCE.md §N"""
+
+    def test_a_relative_child_resolves_under_its_document(self):
+        self.assertEqual(resolve_href("/obix/alarms/", "~alarmQuery/"),
+                         "/obix/alarms/~alarmQuery/")
+        # Not /obix/~alarmQuery/, which is where the servlet root would put it
+        # and where the station has nothing.
+        self.assertEqual(resolve_href("/obix/histories/AHU-01/Temp/",
+                                      "~historyQuery?start=x&end=y"),
+                         "/obix/histories/AHU-01/Temp/~historyQuery?start=x&end=y")
+
+    def test_the_lobby_is_the_one_document_where_both_rules_agree(self):
+        self.assertEqual(resolve_href("/obix/", "config/"), "/obix/config/")
+
+    def test_an_absolute_href_is_left_alone(self):
+        for h in ("/obix/config/AHU-01/", "http://jace/obix/config/"):
+            self.assertEqual(resolve_href("/obix/alarms/", h), h)
+
+    def test_an_ord_href_is_not_a_path_and_is_not_joined(self):
+        # configChild falls back to "|" + ord.encodeToString() for a child it
+        # cannot name. Joining that onto a path would invent a URL.
+        self.assertEqual(resolve_href("/obix/config/", "|slot:/Drivers"),
+                         "|slot:/Drivers")
+
+    def test_a_document_href_without_a_trailing_slash_drops_its_last_segment(self):
+        # Standard relative resolution, and what ObixUtils.concat does for the
+        # nested case it handles.
+        self.assertEqual(resolve_href("/obix/batch", "x/"), "/obix/x/")
+
+    def test_no_base_leaves_the_href_as_it_arrived(self):
+        self.assertEqual(resolve_href("", "~alarmQuery/"), "~alarmQuery/")
+
+    def test_a_whole_document_is_resolved_depth_first(self):
+        doc = decode('<obj href="/obix/config/AHU-01/">'
+                     '<ref name="Fan" href="Fan/">'
+                     '<ref name="Cmd" href="Cmd/"/></ref></obj>',
+                     "/obix/config/AHU-01/")
+        fan = doc.children[0]
+        self.assertEqual(fan.href, "/obix/config/AHU-01/Fan/")
+        self.assertEqual(fan.children[0].href, "/obix/config/AHU-01/Fan/Cmd/")
+
+    def test_an_element_with_no_href_passes_its_parents_base_down(self):
+        # getChildHref(null, name) returns a bare name, so the child of an
+        # element without an href is relative to that element's own base.
+        doc = decode('<obj href="/obix/alarms/"><list name="data">'
+                     '<obj href="CriticalAlarmClass/"/></list></obj>',
+                     "/obix/alarms/")
+        self.assertEqual(doc.children[0].children[0].href,
+                         "/obix/alarms/CriticalAlarmClass/")
+
+    def test_the_document_element_falls_back_to_the_path_it_was_read_from(self):
+        # A batch reply carries no href of its own.
+        doc = decode('<list of="obix:BatchOut"><err href="/obix/nope/"/></list>',
+                     "/obix/batch")
+        self.assertEqual(doc.href, "/obix/batch")
+        self.assertEqual(doc.children[0].href, "/obix/nope/")
+
+
 class TestRead(Base):
     def test_lobby_lists_every_documented_child(self):
         kids = {c.name for c in self.client().lobby().children}
         for name in LOBBY_CHILDREN:
             self.assertIn(name, kids, name)
+
+    def test_the_alarm_branch_is_resolvable_and_never_listed(self):
+        # BAlarmLobbyAgent.encodeLobbyChild is a bare return, so the twelfth
+        # agent writes no element. An agent that walks the lobby cannot find
+        # /obix/alarm/<uuid>; one that is told about it can read it.
+        kids = {c.name for c in self.client().lobby().children}
+        for name in UNLISTED_BRANCHES:
+            self.assertNotIn(name, kids, name)
+        rec = self.client().read("alarm/5f2e6d3c-9a41-4b77-8c10-0a1b2c3d4e5f/")
+        self.assertIn("obix:Alarm", rec.contract)
 
     def test_export_branch_is_named_continuous_control(self):
         # The single most surprising thing in the evidence, and the one an agent

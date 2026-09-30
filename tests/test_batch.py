@@ -95,7 +95,10 @@ class TestFullPaths(Base):
 
 class TestReply(Base):
     def test_the_op_href_comes_from_the_lobby(self):
-        self.assertEqual(batch_href(self.client), "batch")
+        # The lobby serves it as `batch`, relative to /obix/, and the client
+        # resolves it there rather than assembling a path of its own.
+        self.assertIn('href="batch"', self.station.lobby_xml())
+        self.assertEqual(batch_href(self.client), "/obix/batch")
 
     def test_a_lobby_without_a_batch_op_says_so_instead_of_guessing_a_url(self):
         original = self.station.lobby_xml

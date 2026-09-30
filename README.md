@@ -1,8 +1,9 @@
 # obix-mcp
 
 An MCP server that lets an AI agent read a **Niagara** station over **oBIX** — the
-lobby, points, folders, histories, and live values through server-side watches —
-and, only when explicitly enabled, write to a named subtree.
+lobby, points, folders, histories, open alarms, and live values through
+server-side watches — and, only when explicitly enabled, write to a named
+subtree.
 
 It is read-only by default. The write tool is not merely refused when writes are
 off: it is absent from the tool list, so an agent never sees a capability it
@@ -17,7 +18,7 @@ jars and its shipped documentation — rather than recalled from the oBIX
 specification. [EVIDENCE.md](EVIDENCE.md) cites the class and method behind each
 decision, and says plainly where the install answers nothing.
 
-Three things that came out of doing it that way:
+Some of what came out of doing it that way:
 
   * **The export branch is mounted as `continuousControl`, not `export`.** It is
     the literal return of `BExportLobbyAgent.getLobbyName()`. An agent that walks
@@ -30,6 +31,23 @@ Three things that came out of doing it that way:
   * **403 means two unrelated things** — an unlicensed oBIX server, or a
     permission refusal on one object — and only the body separates them
     (`"Unlicensed oBIX Server"`). Both readings are in the error.
+  * **A relative href means "under this document", and an ordinary GET is where
+    that bites.** `ObixEncoder.getChildHref` returns a bare `name + "/"` exactly
+    when the parent is the document element — which a direct read always makes it
+    — and `configChild` puts every component child through it. So `GET
+    /obix/alarms/` answers with its query op at `~alarmQuery/`, meaning
+    `/obix/alarms/~alarmQuery/`. Resolve it against `/obix/` the way a lobby
+    child resolves and the station answers 404 while working perfectly. The lobby
+    is the one document where both readings agree, which is how a bridge passes
+    its whole suite and then fails on the first nested op. This one did, until the
+    fixture started serving hrefs the way the station does. EVIDENCE.md §N.
+  * **One lobby agent is registered and writes nothing.**
+    `BAlarmLobbyAgent.encodeLobbyChild` is a single `return`, so
+    `/obix/alarm/<uuid>` resolves to a real alarm record while appearing in no
+    listing a client can walk. The station's own "UUID not found" message never
+    arrives either: it is thrown inside a `catch (Exception) { throw new
+    BadUriErr(); }` in the method that wrote it, so every failure on that branch
+    is the same empty fault whose `display` is a Java class name.
 
 **It has not been run against a JACE or any other controller.** It is tested
 against a fixture derived from the same evidence, which proves self-consistency
@@ -90,6 +108,7 @@ Flags:
 | `obix_watch_poll` | what changed since the last poll, or everything with `refresh`. |
 | `obix_watch_follow` | poll for N seconds and return every change, with the interval clamped. |
 | `obix_watch_close` | delete the watch rather than letting the lease lapse. |
+| `obix_alarms` | the station's open alarms, through the alarm service's own query op, optionally scoped to one alarm class. Reads only — it cannot acknowledge, clear or change anything. |
 | `obix_history` | a history feed, through the station's own canned queries. |
 | `obix_write` | write one value to one point. **Present only with `--allow-write`.** |
 
@@ -121,10 +140,23 @@ This list is the design, not a disclaimer:
     building.
   * **No history URL construction.** The station lists its own queries; this
     follows their hrefs. Guessing a template works on one station and silently
-    reads nothing on the next.
-  * **No alarm feed.** The install documents alarm *import* only; there is no
-    documented way for a station to export its alarms over oBIX, so there is no
-    tool pretending otherwise.
+    reads nothing on the next — and the station's real names are not the ones the
+    documentation uses (`last24Hours`, not "Last 24 Hours"; eleven of them, not
+    three).
+  * **No alarm acknowledgement.** Reading alarms turned out to be possible after
+    all — the install documents alarm *import* only, but a stock station serves
+    its open alarms through the alarm service's `query` op, and serves each record
+    at `/obix/alarm/<uuid>`, a branch no lobby lists (EVIDENCE.md §N). Every
+    record advertises an `ack` op, and an ack writes to the alarm database: it
+    sets the ack user and state, and with a `forceCleared` child it drives the
+    source to normal and fires the service's audit action. `obix_alarms` builds
+    no ack: no contract naming one, no tool, and a test that walks every string
+    in the module and fails on one that mentions it. Acking an alarm is an
+    operator's decision about a building, and this bridge is not the place to
+    make it from.
+  * **No history append.** The same history document that carries the canned
+    queries carries four ops, one of which appends records. `obix_history`
+    refuses to follow an op by name and says why.
 
 ## Layout
 
@@ -132,11 +164,13 @@ This list is the design, not a disclaimer:
 obix_mcp/obix.py    the protocol client: paths, decode, read, write, faults
 obix_mcp/watch.py   watches, leases, poll intervals
 obix_mcp/batch.py   one POST for many reads, and why it cannot carry a write
+obix_mcp/alarms.py  the open-alarm read, and why it cannot acknowledge
 obix_mcp/server.py  the MCP layer: tool schemas, JSON-RPC over stdio, the gates
 tests/fixture_station.py   an oBIX server built from EVIDENCE.md, not the spec
 tests/test_obix.py         the client
 tests/test_server.py       the tool surface and the gates
 tests/test_batch.py        the batch wire format, and that it cannot write
+tests/test_alarms.py       the alarm query, and that nothing here can ack
 EVIDENCE.md         every protocol decision, and where it came from
 ```
 

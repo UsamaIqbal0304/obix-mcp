@@ -229,6 +229,12 @@ lists what the feed itself offers; called with one it follows that child's own
 `href`. A bridge that guessed `~today` would work on one station and silently
 read nothing on the next.
 
+**Corrected in §N.6.** The station's own names for those queries were read out of
+`BObixHistoryAgent` after this section was written: they are `today`,
+`last24Hours` and `yesterday`, there are eleven of them, they are `ref` elements
+rather than ops, and the same document carries four ops — one of which appends
+records to the history.
+
 ## H. Value types and faults are element names
 
 `com.tridium.obix.util.Obj` — the station's encoder — writes exactly these
@@ -301,10 +307,12 @@ Stated as gaps, not filled in:
      documentation.** Checked by exhaustive grep across the extracted HTML, not
      assumed. Everything in §F about bodies comes from the code instead.
   2. **No watch or history URL templates.** Hence §G's design.
-  3. **No mechanism for a station to export its own alarms as an oBIX feed.** The
-     guide documents alarm *import* only, though `obixDriver-rt.jar` contains
-     server-side alarm feed classes (`BAlarmServiceFeed`, `BAlarmsLobbyAgent`).
-     This bridge exposes no alarm tool for that reason.
+  3. ~~**No mechanism for a station to export its own alarms as an oBIX feed.**~~
+     **Closed in §N.** The gap was in the documentation: the guide documents alarm
+     *import* only, but a stock station serves its open alarms through the alarm
+     service's `query` op and its `feed`, and serves individual records at
+     `/obix/alarm/<uuid>` — a branch no lobby lists. The bridge exposes
+     `obix_alarms` for the first and reports the second.
   4. **The HTTP challenge** (401, `WWW-Authenticate`, scheme selection, realm) is
      not in either oBIX jar — see §D.
   5. **Which URL prefix the web server derives from `servletName`** — narrowed.
@@ -374,3 +382,173 @@ fixture would have performed it. The test is about what the bridge can express.
 proved against a fixture written from it. The batch reply's exact `href` form on a
 real JACE is the most likely thing to differ, which is why rows are matched by
 href *and* the hrefs with no row are reported rather than dropped.
+
+---
+
+## N. Alarms, the branch no lobby lists, and the href rule that governs the whole tree
+
+Read after §B and §G. Two of those sections were incomplete and one was wrong;
+this section is where that is said. Classes read: `BAlarmsLobbyAgent`,
+`BAlarmServiceAgent`, `BAlarmServiceQuery`, `BAlarmClassAgent`,
+`BAlarmLobbyAgent`, `BAlarmWrapper`, `BObixHistoryAgent`, `ObixEncoder`,
+`ObixUtils`, `BadUriErr`.
+
+### N.1 Where a station's own alarms actually are
+
+§K listed as gap 3 that this install documents no way for a station to export its
+alarms, and this bridge shipped no alarm tool for that reason. The gap was in the
+documentation, not in the station. **A stock station serves its open alarms
+through an op**, and here is the whole path:
+
+| Claim | Where it is read |
+| --- | --- |
+| `/obix/alarms/` is a shortcut to the alarm service component | `BAlarmsLobbyAgent extends BShortcutLobbyAgent`, `getComponent()` is `Sys.getService(BAlarmService.TYPE)`, `getLobbyName()` is `"alarms"` |
+| Walking it finds no alarms | its component children are alarm *classes*. The records are not slots on it |
+| What makes it usable is added after the component | `BAlarmServiceAgent.encodeFinishing` writes `<int name="count">` (the open-alarm count), an `op` named `query` with `in="obix:AlarmFilter" out="obix:AlarmQueryOut"`, and a `feed` named `feed` |
+| The op's href is built from `~alarmQuery`, the feed's from `~alarmFeed` | both are `ldc` constants passed to `encoder.getChildHref(encoder.getHref(), …)` — see N.4 for what that returns |
+| The filter is read by child name, and every child is optional | `BAlarmServiceQuery.invoke` looks up `limit`, `start`, `end` and tolerates each being absent. An empty filter means every open alarm |
+| It becomes BQL | `alarm:` + `bql:select * from openAlarms`, with `where alarmClass = '…'` added when the op belongs to one alarm class, and `lastUpdate` bounds when the filter carried times |
+| The reply puts records *before* the totals | the records are a `<list name="data" of="obix:Alarm">`, and `count`, `start`, `end` are written after it, because the station streams a cursor and only then knows them. Nothing may depend on child order |
+| A record names several contracts at once | `is="obix:Alarm obix:AckAlarm"` plus `obix:PointAlarm` or `obix:StatefulAlarm` |
+| A record's only durable handle is a UUID | `<str name="niagara-uuid">`. `source`, `sourceStation`, `msgText`, `alarmClass`, `priority`, `alarmValue`, `timestamp`, `normalTimestamp`, `ackTimestamp`, `ackUser`, `originalSource`, `originalAlarmClass`, `originalPriority` are the rest |
+| One alarm class can be asked instead of the service | `BAlarmClassAgent.encodeFinishing` advertises the same `query` op and `feed`, scoped by the BQL `where` above |
+
+### N.2 The twelfth lobby agent, which writes nothing
+
+§B lists eleven lobby children. Twelve agents are registered, and the twelfth is
+`BAlarmLobbyAgent`, whose `getLobbyName()` returns `"alarm"` and whose
+`encodeLobbyChild(ObixEncoder, Context)` is **a single `return`**: three bytes of
+bytecode, no element.
+
+Its `resolve(String, Context)` is not empty. It splits the URI at the first `/`,
+decodes the first part with `BUuid.decodeFromString`, fetches that record from
+the alarm database and wraps it in `new BAlarmWrapper(record, ackFlag)` — where
+`ackFlag` is `remainder.contains("ack")`.
+
+So `/obix/alarm/<uuid>` is a live, readable object that **appears in no lobby
+listing**. A client that only walks what it is shown cannot reach it; a client
+that has a UUID from a query reply can. That is why `obix.py` carries
+`UNLISTED_BRANCHES` beside `LOBBY_CHILDREN`, and why `obix_lobby` reports it: an
+unlisted branch is worth telling an operator about, not worth pretending away.
+
+### N.3 What an ack is, and the four ways the station makes one awkward
+
+Every record the station encodes advertises an `ack` op. An ack is a POST that
+**writes to the alarm database** — it sets the record's ack user, ack time and
+state, and with a `forceCleared` child it also drives the source to normal and
+fires the service's `auditForceClear` action. Four details, all from
+`BAlarmWrapper` and `BAlarmServiceAgent`:
+
+  1. **`ackUser` is mandatory.** `invoke` calls `get("ackUser").toString()`
+     before any branch, so an `obix:AlarmAckIn` without that child throws a
+     `NullPointerException` rather than defaulting to the authenticated user.
+  2. **`ackUser` is then ignored.** The value is overwritten with the
+     authenticated user's name. Mandatory and discarded at once.
+  3. **The advertised out contract is not the one the reply carries.** The op is
+     written with `out="obix:AlarmAckOut"`; the reply is
+     `is="obix:AckAlarmOut"`. A client matching the advertised contract finds
+     nothing. Both spellings are Tridium's.
+  4. **The ack path is reached by URI, not by contract.** `resolve` turns *any*
+     remainder containing the substring `ack` into an ack-capable wrapper.
+
+**What the bridge does with it.** `alarms.py` reads and cannot ack. This is the
+same shape as the batch defence in §M: not a check inside the ack path, which a
+later edit could relax, but the absence of anything that could express one — no
+verb argument, no ack contract string, no tool, and no request builder that takes
+a record href. `tests/test_alarms.py` walks every string constant in the module
+and fails on any that mentions ack outside the two field names a record reports,
+and separately drives a hand-written ack at the fixture to prove the fixture
+would have performed it. The test is about what the bridge can express.
+
+### N.4 The href rule, which is not an alarm detail
+
+`ObixEncoder.getChildHref(parentHref, name)` decides what every child element's
+`href` says:
+
+  * `name == null` → `null`;
+  * `parentHref.equals(docHref) && parentHref.endsWith("/")` → **`name + "/"`,
+    bare and relative**;
+  * `parentHref == null` → `name + "/"`, likewise;
+  * otherwise → `ObixUtils.concat(parentHref, name + "/")`.
+
+`ObixEncoder.configChild(parentHref, OrdTarget)` — the path **every component
+child** goes through, not a special case for a few agents — calls it for each
+child's href, and falls back to `"|" + ord.encodeToString()` for a child whose
+name it cannot determine.
+
+The consequence is the opposite of what a reader expects: **the relative form is
+what an ordinary GET returns.** A direct read makes the object the document
+element, its href ends in a slash, and so every child comes back bare. Nested
+encodings — where the parent href differs from the document href — get the
+concatenated form. `GET /obix/alarms/` answers with its query op at
+`~alarmQuery/`, which means `/obix/alarms/~alarmQuery/`; a client that resolves
+relative hrefs against the servlet path, the way a lobby child behaves, asks for
+`/obix/~alarmQuery/` and is told 404 by a station that is working correctly.
+
+**The lobby is the one document where the two rules agree**, which is how a
+bridge passes every test it has against a lobby walk and then fails on the first
+nested op. This one did. `obix.py`'s `resolve_href` implements the rule above and
+`decode` applies it to the whole document, depth first, against the path the
+document was read from; `tests/test_obix.py` pins each branch, and the fixture
+serves relative hrefs exactly where the station does so that serving them
+absolute again fails the suite.
+
+`|`-prefixed hrefs are left alone: an ORD is not a path, and joining one onto a
+path would invent a URL.
+
+### N.5 A diagnostic the station throws away
+
+`BAlarmLobbyAgent.resolve` builds `new BadUriErr("UUID not found: " + s)` for a
+UUID the database does not hold — and throws it inside a try whose handler is
+`catch (Exception) { throw new BadUriErr(); }`. `BadUriErr extends
+RuntimeException`, so the method discards its own message. Since
+`ObixEncoder.encode(Throwable)` uses `getMessage()` and falls back to
+`Throwable.toString()` when it is null, what reaches the client is
+`<err is="obix:BadUriErr" display="com.tridium.obix.util.BadUriErr"/>`.
+
+An unparseable UUID, a well-formed UUID that is simply absent, and a database
+error are therefore **indistinguishable**. `ObixFault` in `obix.py` recognises a
+`display` that is a bare Java class name and says so, because the station will
+not.
+
+### N.6 Histories, corrected
+
+§G is right that Tridium publishes no URL template and right that a bridge must
+follow the station's own hrefs. It is wrong about the names, and it does not
+mention that the same document carries ops that write.
+`BObixHistoryAgent.encodeFinishing` writes, in this order:
+
+  * `count`, `start`, `end`;
+  * four **ops**, whose `in`/`out` are **def paths and not contract names** —
+    `query` (`/obix/def/obix:HistoryFilter` → `/obix/def/obix:HistoryQueryOut`),
+    `rollup`, `feed` (a `feed` element, `of="/obix/def/obix:HistoryRecord"`) and
+    `append` (`/obix/def/obix:HistoryAppendIn`). A client matching
+    `in="obix:HistoryFilter"` matches nothing. Their hrefs are built from
+    `~historyQuery`, `~historyRollup`, `~historyFeed`, `~historyAppend` through
+    the rule in N.4;
+  * eleven **refs** — the canned queries, which a GET follows — named
+    `unboundedQuery`, `today`, `last24Hours`, `yesterday`, `weekToDate`,
+    `lastWeek`, `last7Days`, `monthToDate`, `lastMonth`,
+    `yearToDate (limit=1000)` and `lastYear (limit=1000)`. Two of those names
+    carry a space and brackets *inside the `name` attribute*. Their hrefs are
+    relative and already carry the bounds the station computed from its own
+    clock: `~historyQuery?start=…&end=…`, plus `&limit=1000` on the last two and
+    `~historyQuery?limit=1000` on `unboundedQuery`.
+
+So the documentation's "Today, Last 24 Hours and Yesterday" are `today`,
+`last24Hours` and `yesterday`, and there are eight more. `obix_history` lists
+what the station offers, matches a caller's spelling case- and space-insensitively
+(and on the leading word, so `yearToDate` reaches the bracketed name), and
+**refuses to follow any of the four ops by name** — one of them appends records to
+a history. `append` is a write, and this bridge's history tool is a read.
+
+### N.7 Not tested against a station
+
+As §L. Everything above is read out of the shipped jars with `javap` and proved
+against `tests/fixture_station.py`, which was written from this section — the
+fixture acks, force-clears, appends history records and reproduces both the
+contract mismatch and the contentless fault, so that the tests are about what the
+bridge does rather than about what the fixture happens to support. The most
+likely thing to differ on a real JACE is the exact `href` form on a nested
+document, which is why N.4 is implemented as a rule with its branches pinned
+rather than as a string fix-up for the two cases that prompted it.

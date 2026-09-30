@@ -39,9 +39,16 @@ OBIX_NS = "http://obix.org/ns/schema/1.0"
 # *export* agent mounts as `continuousControl`, so an agent looking for
 # /obix/export finds nothing.  EVIDENCE.md §B
 LOBBY_CHILDREN = (
-    "about", "alarm", "alarms", "def", "units", "config", "histories",
+    "about", "alarms", "def", "units", "config", "histories",
     "continuousControl", "bql", "ord", "batch", "watchService",
 )
+
+# Twelve agents are registered and eleven of them write an element. The odd one
+# out is BAlarmLobbyAgent, whose encodeLobbyChild is a single `return`: it
+# serves /obix/alarm/<uuid>, resolving a Niagara UUID against the alarm
+# database, while contributing nothing to the list a client walks. So this is
+# not a branch a station lacks — it is a branch no station shows.  EVIDENCE.md §N
+UNLISTED_BRANCHES = ("alarm",)
 
 # BObixServer.service(WebOp) switches on the uppercased request method:
 # GET encodes the resolved target (read), PUT calls ObixUtils.serviceWrite,
@@ -64,12 +71,39 @@ class ObixError(Exception):
     """Anything that stopped the request, with a message an engineer can act on."""
 
 
+# A Niagara err whose `display` is a bare Java class name carries no message at
+# all: `ObixEncoder.encode(Throwable)` uses getMessage() and falls back to
+# toString() when it is null, so this is what a no-argument throw looks like on
+# the wire. It happens more than a reader would expect — `BAlarmLobbyAgent.resolve`
+# wraps its whole body in `catch (Exception) { throw new BadUriErr(); }`, which
+# swallows even the "UUID not found: ..." diagnostic the same method wrote — so
+# the client says what the station did not.  EVIDENCE.md §N
+_BARE_CLASS_DISPLAY = re.compile(r"^(?:[a-z][\w$]*\.)+[A-Z][\w$]*$")
+
+_BARE_CLASS_HELP = {
+    "com.tridium.obix.util.BadUriErr":
+        "the station could not resolve that href, and its reply carries no reason. "
+        "On the alarm branch every failure looks like this one: an unparseable UUID, "
+        "a UUID that is simply not in the alarm database, and a database error are "
+        "all the same empty fault.",
+    "com.tridium.obix.util.PermissionErr":
+        "the station refused the object on permissions, without saying which check "
+        "failed. The oBIX user's own permissions on that component are where to look.",
+}
+
+
 class ObixFault(ObixError):
     """The station answered with an <err> element. This is the station saying no."""
 
     def __init__(self, contract: str, display: str, href: str = ""):
         self.contract, self.display, self.href = contract, display, href
-        super().__init__(f"{contract or 'obix:err'}: {display or 'no detail given'}"
+        detail = display or "no detail given"
+        if _BARE_CLASS_DISPLAY.match(display or ""):
+            detail = (f"{display} — that display is a Java class name, not a message: "
+                      + _BARE_CLASS_HELP.get(
+                          display.strip(),
+                          "the station threw without one, so the class is all it said."))
+        super().__init__(f"{contract or 'obix:err'}: {detail}"
                          + (f" (at {href})" if href else ""))
 
 
@@ -167,8 +201,65 @@ def _localname(tag: str) -> str:
     return tag.rsplit("}", 1)[-1] if "}" in tag else tag
 
 
-def decode(xml: str | bytes) -> ObixObject:
-    """Decode one oBIX document.
+def resolve_href(base: str, href: str) -> str:
+    """Resolve one href against the href of the object that carried it.
+
+    This is the rule the station encodes to, read out of
+    `ObixEncoder.getChildHref(parentHref, name)` and its one caller that matters,
+    `ObixEncoder.configChild` — which is the path *every* component child goes
+    through, not a special case for a few agents:
+
+      * when the parent element is the document element and its href ends in a
+        slash, the child href is a bare `name + "/"`;
+      * when the parent has no href, likewise a bare `name + "/"`;
+      * otherwise `ObixUtils.concat(parentHref, name + "/")`.
+
+    So the hrefs a client cannot resolve against the servlet root are exactly
+    the ones an ordinary GET returns. `GET /obix/alarms/` answers with its query
+    op at `~alarmQuery/`, and that means `/obix/alarms/~alarmQuery/`. Resolving
+    it against `/obix/` — which is what a client does if it treats every
+    relative href the way a lobby child behaves — asks for
+    `/obix/~alarmQuery/`, and the station answers 404. The lobby is the one
+    document where the two agree, which is why a bridge can pass every test it
+    has against a lobby walk and still fail on the first nested op.
+
+    An href beginning `|` is left alone: `configChild` falls back to
+    `"|" + ord.encodeToString()` for a child it cannot name, and that is an ORD,
+    not a path to join onto anything.  EVIDENCE.md §N
+    """
+    h = (href or "").strip()
+    if not h or h.startswith("|"):
+        return h
+    if re.match(r"^https?://", h) or h.startswith("/"):
+        return h
+    b = (base or "").strip()
+    if not b or b.startswith("|") or not re.match(r"^(https?://|/)", b):
+        return h
+    return urllib.parse.urljoin(b, h)
+
+
+def _resolve_tree(obj: "ObixObject", base: str) -> None:
+    """Resolve every href in a decoded document, depth first.
+
+    Each element is resolved against its parent's *resolved* href, and an
+    element without one passes its own parent's down — which is what the encoder
+    does when it hands `getChildHref` a null parent href.
+    """
+    obj.href = resolve_href(base, obj.href)
+    inner = obj.href or base
+    for c in obj.children:
+        _resolve_tree(c, inner)
+
+
+def decode(xml: str | bytes, doc_href: str = "") -> ObixObject:
+    """Decode one oBIX document, with every href resolved.
+
+    `doc_href` is the path the document was fetched from. The station normally
+    sets the document element's own href and that wins; `doc_href` is what makes
+    a reply that omits it — a batch reply, a fault — still resolvable. Hrefs are
+    resolved here rather than at the point of use because a caller that holds an
+    href from a nested read has no way to know what it was relative to.
+    See `resolve_href`.  EVIDENCE.md §N
 
     The station sends text/xml with the oBIX namespace as the default, so every
     element arrives namespace-qualified from ElementTree's point of view. Both
@@ -181,6 +272,13 @@ def decode(xml: str | bytes) -> ObixObject:
     except ET.ParseError as exc:
         raise ObixError(f"the station's reply is not XML: {exc}") from exc
     obj = _decode_elem(root)
+    base = (doc_href or "").strip()
+    _resolve_tree(obj, base)
+    if not obj.href and base:
+        # The document element is addressable at the path it was read from even
+        # when the station leaves the href off, and a batch reply does exactly
+        # that: `<list of="obix:BatchOut">` with no href and no name.
+        obj.href = base
     if obj.tag == "err":
         raise ObixFault(obj.contract, obj.display or obj.display_name, obj.href)
     return obj
@@ -382,9 +480,14 @@ class ObixClient:
 
     # ------------------------------------------------------------ operations
 
+    def doc_path(self, href: str = "") -> str:
+        """The servlet path a href lands on — the base every href inside the
+        reply is relative to.  EVIDENCE.md §N"""
+        return urllib.parse.urlsplit(self.url_for(href)).path
+
     def read(self, href: str = "") -> ObixObject:
         """GET the object at href. BObixServer encodes the resolved target."""
-        return decode(self.request(VERB_READ, href))
+        return decode(self.request(VERB_READ, href), self.doc_path(href))
 
     def lobby(self) -> ObixObject:
         return self.read("")
@@ -405,7 +508,8 @@ class ObixClient:
                 f"{href} is not in the write allowlist. Writing is enabled but scoped: "
                 f"add a prefix that covers this href to widen it. Allowed now: "
                 f"{', '.join(self.write_allowlist) or '(nothing)'}")
-        return decode(self.request(VERB_WRITE, href, encode_value(tag, value, name)))
+        return decode(self.request(VERB_WRITE, href, encode_value(tag, value, name)),
+                      self.doc_path(href))
 
     def _allowed(self, absolute_url: str) -> bool:
         path = urllib.parse.urlsplit(absolute_url).path
@@ -417,4 +521,5 @@ class ObixClient:
 
     def invoke(self, href: str, body: bytes = b"") -> ObixObject:
         """POST to an op's href. The station routes POST to the invoke path."""
-        return decode(self.request(VERB_INVOKE, href, body or b""))
+        return decode(self.request(VERB_INVOKE, href, body or b""),
+                      self.doc_path(href))
