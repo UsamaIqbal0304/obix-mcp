@@ -158,6 +158,88 @@ The station as an oBIX *client* does build a Basic header — `obix.net.ObixSess
 in `obix-rt.jar` assembles `"Basic " + Base64(user + ":" + password)` — which is
 the only literal Basic construction in either jar, and it is outbound.
 
+### D.1 The challenge, found: `baja.jar`, `web-rt.jar`, `jetty-rt.jar`
+
+The gap above said the challenge "lives in the platform's web stack, which was not
+read". It has now been read, which closes §K.4. Located by scanning all 756 module
+jars for `WWW-Authenticate`, `realm=` and `HTTPBasicScheme`; the station-side path is
+three classes.
+
+**The scheme.** `com.tridium.authn.BHTTPBasicAuthenticationScheme` in `baja.jar`
+extends `BPasswordAuthenticationScheme`, and its `SCHEME_NAME` is the string
+**`n4HTTPbasic`** — not `basic`, which belongs to
+`BLegacyBasicAuthenticationScheme` (`SCHEME_NAME = "basic"`). `getLoginConfiguration()`
+returns a `NiagaraLoginConfiguration` over `UsernamePasswordLoginModule`, so this is
+an ordinary username/password JAAS login once the credentials are in hand.
+
+**Two callback handlers are registered on that one scheme.** From `web-rt.jar`'s
+`module.xml`, both of these carry `<agent><on type="baja:HTTPBasicAuthenticationScheme"/>`:
+
+  * `com.tridium.web.authn.BWebHTTPBasicCallbackHandler` — **this is RFC 7617.**
+    `handleRequest` reads `Authorization`, takes `substring(indexOf(" ") + 1)`,
+    `Base64.getDecoder().decode(...)`, then `new String(bytes)` **with no charset
+    argument**, splits on the first `:` into a `String` username and a `char[]`
+    password, sets `readyForCallback = true` and returns `0`. Returning 0 means no
+    challenge: it proceeds straight to the login module. Note the charset — the
+    credentials are decoded in the JVM's *default* charset, not an explicit UTF-8, so
+    a non-ASCII password is a real portability risk between a client that encodes
+    UTF-8 and a station that decodes something else.
+  * `com.tridium.web.authn.BHttpBasicCallbackHandler` — **challenge only, and not
+    RFC 7617 at all.** It extends `BHttpHeaderCallbackHandler`. Its `processHello`
+    parses the `Authorization` header with `javax.baja.web.authn.AuthMessage
+    .decodeFromString`, reads a **`username` parameter** out of it and
+    `Base64.getUrlDecoder()`-decodes that as UTF-8, then builds a fresh `AuthMessage`
+    with scheme `BASIC`, sets it as `WWW-Authenticate`, sets status `401` and returns
+    `1`. Its `handle(Callback[])` unconditionally throws
+    `UnsupportedCallbackException("HTTP Basic Callback Handler does not support any
+    callbacks.")`, so it can never complete a login by itself.
+
+**The `AuthMessage` wire format** (`javax.baja.web.authn.AuthMessage`, `web-rt.jar`)
+is Niagara's own, not the HTTP `auth-param` grammar. `decodeFromString` takes
+`indexOf(' ')`; everything before it is the scheme and everything after is tokenized
+on `,`, each token split at the first `=` into a trimmed key and value, with
+`IllegalArgumentException("parameter missing '='")` and
+`("duplicate parameter")` as the two failures. If there is no space at all the whole
+string is the scheme and there are no parameters. The named parameter constants are
+`handshakeToken`, `username`, `authToken`; the schemes named are `HELLO` and `BEARER`;
+`ILLEGAL_TOKEN_CHARS` is ``(),/:;<=>?@[\]{}``.
+
+**What is actually on the wire.** `com.tridium.jetty.NiagaraAuthenticator` is what
+sends it. When a handler returns the challenge code and **is** a
+`BHttpHeaderCallbackHandler`, the authenticator sets status 401, reads back the
+`WWW-Authenticate` header the handler just set, `AuthMessage.decodeFromString`s it,
+**adds `handshakeToken` = the Niagara web session id**, re-sets the header, stores
+`authenticationScheme` and `callbackHandler` as attributes on that web session, and
+returns jetty's `SEND_CONTINUE`. So the challenge a client sees is shaped like:
+
+```
+WWW-Authenticate: BASIC handshakeToken=<niagara web session id>
+```
+
+Two things follow, and both matter to a client author:
+
+  * **There is no `realm`.** No `realm=` literal exists on this path in `web-rt.jar`,
+    `jetty-rt.jar` or `baja.jar` — the nine jars that do contain one are all HTTP
+    *client* or platform-daemon code. The scheme token is also upper-case `BASIC`
+    rather than the conventional `Basic`. A client that only engages Basic auth after
+    recognising a well-formed `Basic realm="..."` challenge has nothing to match on.
+  * **The challenge is stateful.** The handler instance and the scheme are parked on a
+    server-side session and the token names it. A client that treats 401 as "resend
+    with credentials and forget" is not participating in that handshake.
+
+Which is why this bridge sends `Authorization: Basic …` **pre-emptively on every
+request** rather than waiting to be challenged: the pre-emptive path is handled by
+`BWebHTTPBasicCallbackHandler`, which is real RFC 7617 and returns 0 without ever
+issuing a challenge. Waiting for the challenge is the path that leads into the
+session-bound `AuthMessage` handshake instead.
+
+One honest limit: both handlers are agents on the same scheme, and **which one a given
+request gets is resolved by Niagara's agent lookup, which was not read.** The claim
+here is about what each handler does and what the authenticator does with the result,
+not about the selection rule. What this does establish is that a station's 401 to an
+oBIX client carries no realm, and that the credential-parsing path uses the default
+charset.
+
 ## E. Two write paths, and the export descriptor is only one of them
 
 `ExposingWritableControlPointsForExt-…html`: writable control points are exposed
@@ -395,8 +477,14 @@ Stated as gaps, not filled in:
      service's `query` op and its `feed`, and serves individual records at
      `/obix/alarm/<uuid>` — a branch no lobby lists. The bridge exposes
      `obix_alarms` for the first and reports the second.
-  4. **The HTTP challenge** (401, `WWW-Authenticate`, scheme selection, realm) is
-     not in either oBIX jar — see §D.
+  4. ~~**The HTTP challenge** (401, `WWW-Authenticate`, scheme selection, realm) is
+     not in either oBIX jar.~~ **Closed in §D.1.** It is not in either oBIX jar because
+     it is in `baja.jar`, `web-rt.jar` and `jetty-rt.jar`: the scheme is
+     `n4HTTPbasic` over `UsernamePasswordLoginModule`, two callback handlers are
+     registered on it (one real RFC 7617, one challenge-only), and the challenge jetty
+     emits is `WWW-Authenticate: BASIC handshakeToken=<web session id>` with **no
+     realm**. What remains unread is only the agent-selection rule that picks between
+     the two handlers.
   5. **Which URL prefix the web server derives from `servletName`** — narrowed.
      The property is read for servlet registration and for URI resolution, and
      ignored by the five path getters; the concrete web server's `doRegister` was
@@ -414,8 +502,12 @@ station agrees**, and it has not been run against a JACE-8000 or any other
 controller.
 
 The two things most likely to differ, in order: the WatchIn body (§F — evidenced
-from the decoder, but never sent to a real station), and authentication (§D — the
-challenge lives in code that was not read). `--dump` prints every request and
+from the decoder, but never sent to a real station), and authentication — though
+§D.1 has since read the challenge out of `baja.jar`, `web-rt.jar` and `jetty-rt.jar`,
+so what is left there is narrower than it was. What a first real run should record
+about auth: whether the 401 body and headers match `BASIC handshakeToken=…` with no
+realm, and whether a non-ASCII password survives the round trip given the station
+decodes credentials in its default charset. `--dump` prints every request and
 reply for exactly that first run.
 
 ---

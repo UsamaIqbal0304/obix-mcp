@@ -120,7 +120,12 @@ _STATUS_HELP = {
     401: ("The station rejected the credentials. Niagara does not enable HTTP Basic "
           "by default: HTTPBasicScheme has to be added to the station's "
           "AuthenticationService and assigned to the user this tool signs in as. "
-          "Until it is, every request here is a 401 no matter what the password is."),
+          "Until it is, every request here is a 401 no matter what the password is. "
+          "The scheme's internal name is 'n4HTTPbasic'. Do not expect a realm in "
+          "the challenge — a Niagara 401 carries 'WWW-Authenticate: BASIC "
+          "handshakeToken=<session id>' and no realm at all. If the password has "
+          "non-ASCII characters, suspect the charset: the station decodes the "
+          "credentials in its default charset, and this client encodes UTF-8."),
     # 403 carries two unrelated meanings and the body is what separates them, so
     # this text sends the reader to the body rather than guessing for them.
     403: ("A 403 here is one of two different things, and the station's own words "
@@ -362,6 +367,15 @@ class ObixClient:
         # stored, and nothing in this module logs a header.
         self._auth = None
         if user:
+            # Sent pre-emptively on every request, and that is deliberate. A
+            # station has two callback handlers registered on the HTTP Basic
+            # scheme: the RFC 7617 one, which parses a header that is already
+            # there and proceeds straight to the login module, and a
+            # challenge-only one that answers 401 with Niagara's own AuthMessage
+            # and a session-bound handshakeToken. Sending credentials up front
+            # stays on the first path. UTF-8 here is this client's choice; the
+            # station decodes with `new String(bytes)` and no charset argument,
+            # so a non-ASCII password can disagree.  EVIDENCE.md §D.1
             token = base64.b64encode(f"{user}:{password}".encode("utf-8")).decode("ascii")
             self._auth = "Basic " + token
         self._ctx = None
