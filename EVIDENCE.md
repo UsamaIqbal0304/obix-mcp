@@ -760,3 +760,60 @@ bridge does rather than about what the fixture happens to support. The most
 likely thing to differ on a real JACE is the exact `href` form on a nested
 document, which is why N.4 is implemented as a rule with its branches pinned
 rather than as a string fix-up for the two cases that prompted it.
+
+## O. The `about` object: what `/obix/about` actually says
+
+`about` is the one lobby child from §B whose contents nobody reads, because in
+the lobby listing it is written as a bare `ref`: `encodeLobbyChild` builds an
+`Obj`, sets element `ref`, `is="obix:About"`, name `about`, href from the
+encoder, and writes that and nothing else. The fields live only at
+`/obix/about`, reached by following the ref — `resolve()` re-roots to
+`station:` plus this agent's `getSlotPathOrd()`. `BObixAbout` is registered in
+`obixDriver-rt`'s `module.xml` as an agent on `obixDriver:ObixLobby` with
+`requiredPermissions="r"`, so any oBIX user with read gets it.
+
+The twelve properties and where each value comes from, all set in `<clinit>`
+(decoded from `com.tridium.obix.server.BObixAbout`, obixDriver-rt 4.15.5.22):
+
+| field | value at type-load |
+|---|---|
+| obixVersion | literal `1.0` |
+| serverName | `Sys.getHostName()` |
+| serverTime | `Clock.time()` — and refreshed on every `resolve()` |
+| serverBootTime | `Clock.time()` at type-load |
+| vendorName | literal `Tridium, Inc.` |
+| vendorUrl | literal `http://www.tridium.com` |
+| productName | literal `Niagara AX` |
+| productVersion | `Sys.getBajaVersion().toString()` |
+| productUrl | literal `http://www.tridium.com` |
+| tz | `BTimeZone.getLocal().getId()` |
+| componentCount | `Sys.getStation().getComponentSpace().getComponentCount()` |
+| localHistoryCount | rows counted from the local `BHistoryService` database |
+
+Three things are worth saying out loud.
+
+**`productName` is the literal string `Niagara AX`.** It is an `ldc` of a frozen
+Property default, and nothing in any of the six obix jars calls
+`setProductName` — grepped the constant pool of every class in `obix-rt`,
+`obix-se`, `obixDriver-rt`, `obixDriver-wb`, `obixSeriesTransform-rt` and
+`obixMigrator-wb`, and only `BObixAbout` itself names the method or the string.
+About is a transient lobby agent, not a component in the station database, so
+there is no slot an integrator edits either. A stock Niagara 4 station
+therefore identifies its product to every oBIX client as *Niagara AX* — the
+pre-4.0 brand.
+
+**`componentCount` and `localHistoryCount` are not in the oBIX `About`
+contract.** They are Tridium extensions. `componentCount` is the total number
+of components in the station's component space; `localHistoryCount` counts the
+rows of the local `BHistoryService` database (they fall back to `workbench` and
+`0` when there is no station). So `/obix/about` hands a read-only oBIX user two
+direct measures of how big the station is.
+
+**Only `serverTime` is live per request.** `resolve()` calls
+`setServerTime(Clock.time())` before handing back the target; the other eleven
+fields keep the values captured when the type first loaded, so `componentCount`
+and `localHistoryCount` are a snapshot from that moment, not a current count.
+
+This is Tier A (bytecode of the shipped jar) and changes nothing the bridge
+does — the bridge never reads `about` for its own operation. It is here because
+§B named the child and left its contents undecoded.
