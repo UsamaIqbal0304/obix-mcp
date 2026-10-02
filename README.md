@@ -199,3 +199,25 @@ though it has only been run on 3.12.
 Not affiliated with, endorsed by, or supported by Tridium. Niagara and JACE are
 their trademarks; oBIX is an OASIS standard. This reads a station over its own
 published interface and nothing more.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE). Use it, fork it, ship it inside something you sell; no
+attribution needed beyond the licence text.
+
+## More
+
+The [tool's page](https://plantroomlabs.com/tools/obix-mcp/) has the tool list with the
+gates spelled out, and two notes cover the ground underneath it: [what an oBIX server
+actually exposes](https://plantroomlabs.com/notes/what-an-obix-server-actually-exposes/) —
+written from a station's own output, not from the specification — and [letting an agent
+write to a control
+system](https://plantroomlabs.com/notes/letting-an-agent-write-to-a-control-system/), which
+is the reasoning behind the read-only default here. Its three siblings are
+[bacnet-sweep](https://github.com/UsamaIqbal0304/bacnet-sweep),
+[mqtt-tap](https://github.com/UsamaIqbal0304/mqtt-tap) and
+[decoder-check](https://github.com/UsamaIqbal0304/decoder-check).
+
+Written by [Plantroom Labs](https://plantroomlabs.com) — protocol and systems engineering:
+modules and drivers, bajaux widgets, PX graphics, station and controller work. Issues and
+pull requests are read.
